@@ -1,0 +1,132 @@
+\begin{thebibliography}{14}
+\providecommand{\natexlab}[1]{#1}
+
+\bibitem[{Agarwal et~al.(2024)Agarwal, Karthik, Li, Chen, Casanas, Karanasos,
+  Kraska, Nori, Rahman, Zhang, Mittal, Basu, and Cai}]{agarwal2024crossmodel}
+Anurag Agarwal, Shiva Karthik, Chang Li, Xin Chen, Roger Casanas, Konstantinos
+  Karanasos, Tim Kraska, Aditya Nori, Jayanta Rahman, Ce~Zhang, Sparsh Mittal,
+  Sumit Basu, and Haoran Cai. 2024.
+\newblock \href {https://doi.org/10.1145/3627673.3679932} {Generating
+  cross-model analytics workloads using llms}.
+\newblock In \emph{Proceedings of the 33rd ACM International Conference on
+  Information and Knowledge Management}, pages 1024--1034. Association for
+  Computing Machinery.
+
+\bibitem[{Brown et~al.(2020)Brown, Mann, Ryder, Subbiah, Kaplan, Dhariwal,
+  Neelakantan, Shyam, Sastry, Askell, Agarwal, Herbert-Voss, Krueger, Henighan,
+  Child, Ramesh, Ziegler, Wu, Winter, Hesse, Chen, Sigler, Litwin, Gray, Chess,
+  Clark, Berner, McCandlish, Radford, Sutskever, and
+  Amodei}]{brown2020languagemodelsfewshotlearners}
+Tom~B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan,
+  Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda
+  Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan,
+  Rewon Child, Aditya Ramesh, Daniel~M. Ziegler, Jeffrey Wu, Clemens Winter,
+  and 12 others. 2020.
+\newblock \href {https://arxiv.org/abs/2005.14165} {Language models are
+  few-shot learners}.
+\newblock \emph{Preprint}, arXiv:2005.14165.
+
+\bibitem[{Dettmers et~al.(2023)Dettmers, Pagnoni, Holtzman, and
+  Zettlemoyer}]{dettmers2023qloraefficientfinetuningquantized}
+Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. 2023.
+\newblock \href {https://arxiv.org/abs/2305.14314} {Qlora: Efficient finetuning
+  of quantized llms}.
+\newblock \emph{Preprint}, arXiv:2305.14314.
+
+\bibitem[{Devlin et~al.(2019)Devlin, Chang, Lee, and
+  Toutanova}]{devlin2019bertpretrainingdeepbidirectional}
+Jacob Devlin, Ming-Wei Chang, Kenton Lee, and Kristina Toutanova. 2019.
+\newblock \href {https://arxiv.org/abs/1810.04805} {Bert: Pre-training of deep
+  bidirectional transformers for language understanding}.
+\newblock \emph{Preprint}, arXiv:1810.04805.
+
+\bibitem[{Kiela et~al.(2021)Kiela, Bartolo, Nie, Kaushik, Geiger, Wu, Vidgen,
+  Prasad, Singh, Ringshia, Ma, Thrush, Riedel, Waseem, Stenetorp, Jia, Bansal,
+  Potts, and Williams}]{kiela2021dynabenchrethinkingbenchmarkingnlp}
+Douwe Kiela, Max Bartolo, Yixin Nie, Divyansh Kaushik, Atticus Geiger,
+  Zhengxuan Wu, Bertie Vidgen, Grusha Prasad, Amanpreet Singh, Pratik Ringshia,
+  Zhiyi Ma, Tristan Thrush, Sebastian Riedel, Zeerak Waseem, Pontus Stenetorp,
+  Robin Jia, Mohit Bansal, Christopher Potts, and Adina Williams. 2021.
+\newblock \href {https://arxiv.org/abs/2104.14337} {Dynabench: Rethinking
+  benchmarking in nlp}.
+\newblock \emph{Preprint}, arXiv:2104.14337.
+
+\bibitem[{Lewis et~al.(2021)Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal,
+  K{"u}ttler, Lewis, tau Yih, Rockt{"a}schel, Riedel, and
+  Kiela}]{lewis2021retrievalaugmentedgenerationknowledgeintensivenlp}
+Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir
+  Karpukhin, Naman Goyal, Heinrich K{"u}ttler, Mike Lewis, Wen tau Yih, Tim
+  Rockt{"a}schel, Sebastian Riedel, and Douwe Kiela. 2021.
+\newblock \href {https://arxiv.org/abs/2005.11401} {Retrieval-augmented
+  generation for knowledge-intensive nlp tasks}.
+\newblock \emph{Preprint}, arXiv:2005.11401.
+
+\bibitem[{Perevalov et~al.(2022)Perevalov, Diefenbach, Usbeck, and
+  Both}]{perevalov2022qald9plusmultilingualdatasetquestion}
+Aleksandr Perevalov, Dennis Diefenbach, Ricardo Usbeck, and Andreas Both. 2022.
+\newblock \href {https://arxiv.org/abs/2202.00120} {Qald-9-plus: A multilingual
+  dataset for question answering over dbpedia and wikidata translated by native
+  speakers}.
+\newblock \emph{Preprint}, arXiv:2202.00120.
+
+\bibitem[{Raffel et~al.(2023)Raffel, Shazeer, Roberts, Lee, Narang, Matena,
+  Zhou, Li, and Liu}]{raffel2023exploringlimitstransferlearning}
+Colin Raffel, Noam Shazeer, Adam Roberts, Katherine Lee, Sharan Narang, Michael
+  Matena, Yanqi Zhou, Wei Li, and Peter~J. Liu. 2023.
+\newblock \href {https://arxiv.org/abs/1910.10683} {Exploring the limits of
+  transfer learning with a unified text-to-text transformer}.
+\newblock \emph{Preprint}, arXiv:1910.10683.
+
+\bibitem[{Ren et~al.(2020)Ren, Guo, Lu, Zhou, Liu, Tang, Sundaresan, Zhou,
+  Blanco, and Ma}]{ren2020codebleumethodautomaticevaluation}
+Shuo Ren, Daya Guo, Shuai Lu, Long Zhou, Shujie Liu, Duyu Tang, Neel
+  Sundaresan, Ming Zhou, Ambrosio Blanco, and Shuai Ma. 2020.
+\newblock \href {https://arxiv.org/abs/2009.10297} {Codebleu: a method for
+  automatic evaluation of code synthesis}.
+\newblock \emph{Preprint}, arXiv:2009.10297.
+
+\bibitem[{Rony et~al.(2022)Rony, Kumar, Teucher, Kovriguina, and
+  Lehmann}]{Rony_2022}
+Md~Rashad Al~Hasan Rony, Uttam Kumar, Roman Teucher, Liubov Kovriguina, and
+  Jens Lehmann. 2022.
+\newblock \href {https://doi.org/10.1109/access.2022.3188714} {Sgpt: A
+  generative approach for sparql query generation from natural language
+  questions}.
+\newblock \emph{IEEE Access}, 10:70712--70723.
+
+\bibitem[{Scholak et~al.(2021)Scholak, Schucher, and Bahdanau}]{Scholak_2021}
+Torsten Scholak, Nathan Schucher, and Dzmitry Bahdanau. 2021.
+\newblock \href {https://doi.org/10.18653/v1/2021.emnlp-main.779} {Picard:
+  Parsing incrementally for constrained auto-regressive decoding from language
+  models}.
+\newblock In \emph{Proceedings of the 2021 Conference on Empirical Methods in
+  Natural Language Processing}, pages 9895--9901. Association for Computational
+  Linguistics.
+
+\bibitem[{Sen et~al.(2022)Sen, Aji, and
+  Saffari}]{sen2022mintakacomplexnaturalmultilingual}
+Priyanka Sen, Alham~Fikri Aji, and Amir Saffari. 2022.
+\newblock \href {https://arxiv.org/abs/2210.01613} {Mintaka: A complex,
+  natural, and multilingual dataset for end-to-end question answering}.
+\newblock \emph{Preprint}, arXiv:2210.01613.
+
+\bibitem[{Touvron et~al.(2023)Touvron, Lavril, Izacard, Martinet, Lachaux,
+  Lacroix, Rozi{\`e}re, Goyal, Hambro, Azhar, Rodriguez, Joulin, Grave, and
+  Lample}]{touvron2023llamaopenefficientfoundation}
+Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne
+  Lachaux, Timoth{\'e}e Lacroix, Baptiste Rozi{\`e}re, Naman Goyal, Eric
+  Hambro, Faisal Azhar, Aurelien Rodriguez, Armand Joulin, Edouard Grave, and
+  Guillaume Lample. 2023.
+\newblock \href {https://arxiv.org/abs/2302.13971} {Llama: Open and efficient
+  foundation language models}.
+\newblock \emph{Preprint}, arXiv:2302.13971.
+
+\bibitem[{Trivedi et~al.(2017)Trivedi, Maheshwari, Dubey, and
+  Lehmann}]{Trivedi_2017}
+Priyansh Trivedi, Gaurav Maheshwari, Mohnish Dubey, and Jens Lehmann. 2017.
+\newblock \href {https://doi.org/10.1007/978-3-319-68204-4_22} {\emph{LC-QuAD:
+  A Corpus for Complex Question Answering over Knowledge Graphs}}, pages
+  210--218.
+\newblock Springer International Publishing.
+
+\end{thebibliography}
