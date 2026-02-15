@@ -134,3 +134,6 @@ artifacts/
 *.run.xml
 *.synctex.gz
 *.toc
+
+# Generated paper outputs
+paper_acl2026_industry/acl_latex.pdf

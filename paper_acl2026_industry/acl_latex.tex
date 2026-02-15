@@ -1,7 +1,7 @@
 \documentclass[11pt]{article}
 
-% Change "review" to "final" to generate the final (camera-ready) version.
-\usepackage[review]{acl}
+% Public/arXiv-facing source.
+\usepackage[final]{acl}
 
 % Standard package includes
 \usepackage{times}
@@ -21,7 +21,10 @@
 
 \title{PIPE-RDF: An LLM-Assisted Pipeline for Enterprise RDF Benchmarking}
 
-\author{Anonymous}
+\author{
+  Suraj Ranganath \\
+  \texttt{suraj-ranganath@users.noreply.github.com}
+}
 
 \begin{document}
 \maketitle
@@ -40,7 +43,7 @@ PIPE-RDF addresses this gap with a pipeline for constructing proprietary, catego
   \item propose a three-phase benchmark generation pipeline tailored to enterprise RDF graphs, with reverse querying and execution validation;
   \item implement PIPE-RDF on a fixed-schema company-location slice (Schema C) and release balanced benchmark artifacts;
   \item report operational metrics (parse validity, execution success, empty results, latency, complexity, pre-repair rates, entity diversity) from a final 450-pair run;
-  \item provide guidance for maintaining and scaling organization-specific benchmarks.\footnote{Code, artifacts, and benchmark data are available at an anonymized repository.}
+  \item provide guidance for maintaining and scaling organization-specific benchmarks.\footnote{Code, artifacts, and benchmark data are available at \url{https://github.com/suraj-ranganath/PIPE-RDF}.}
 \end{itemize}
 
 \section{Background and Related Work}
