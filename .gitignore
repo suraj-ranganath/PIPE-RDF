@@ -97,8 +97,6 @@ experiments/
 results/
 plots/
 figures/
-!paper_acl2026_industry/figures/
-!paper_acl2026_industry/figures/*.png
 
 # Coverage reports
 htmlcov/
