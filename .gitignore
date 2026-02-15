@@ -1,0 +1,136 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+PYTHONPATH
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# RapidFire AI logs
+rapidfire.log
+*.log
+
+# Model checkpoints and outputs
+checkpoints/
+outputs/
+runs/
+models/
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# TensorBoard
+tensorboard/
+tb_logs/
+lightning_logs/
+
+# MLflow
+mlruns/
+mlflow/
+
+# Data (uncomment if you don't want to track datasets)
+# data/
+# datasets/
+# *.csv
+# *.json
+# *.jsonl
+
+# Hugging Face cache
+.cache/
+huggingface/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+~$*
+
+# Environment variables
+.env
+.env.local
+
+# Experiment artifacts
+experiments/
+results/
+plots/
+figures/
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# pytest
+.pytest_cache/
+# External dependencies
+external/
+
+graphdb_data_backup/
+artifacts/
+
+# Local scratch / hidden temp files
+.!*
+.tmp*
+
+# Office / binary drafts not needed in Git history
+*.docx
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.log
+*.lot
+*.out
+*.run.xml
+*.synctex.gz
+*.toc

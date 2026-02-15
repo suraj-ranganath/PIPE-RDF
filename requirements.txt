@@ -1,0 +1,11 @@
+openai
+python-dotenv
+rdflib
+SPARQLWrapper
+faiss-cpu
+numpy
+pandas
+matplotlib
+requests
+pyparsing
+pyyaml
