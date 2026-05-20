@@ -19,32 +19,35 @@
 \usepackage{amssymb}
 \DefineVerbatimEnvironment{SPARQL}{Verbatim}{breaklines=true,breakanywhere=true,fontsize=\small}
 
-\title{PIPE-RDF: An LLM-Assisted Pipeline for Enterprise RDF Benchmarking}
+\title{PIPE-RDF: Execution-Grounded Generation of Schema-Specific NL--SPARQL Benchmarks}
 
 \author{
   Suraj Ranganath \\
-  UC San Deigo \\
-  \texttt{suranganath@ucsd}
+  UC San Diego \\
+  \texttt{suranganath@ucsd.edu}
 }
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-Enterprises rely on RDF knowledge graphs and SPARQL to expose operational data through natural language interfaces, yet public KGQA benchmarks do not reflect proprietary schemas, prefixes, or query distributions. We present PIPE-RDF, a three-phase pipeline that constructs schema-specific NL--SPARQL benchmarks using reverse querying, category-balanced template generation, retrieval-augmented prompting, deduplication, and execution-based validation with repair. We instantiate PIPE-RDF on a fixed-schema company-location slice (5\,000 companies) derived from public RDF data and generate a balanced benchmark of 450 question--SPARQL pairs across nine categories. The pipeline achieves 100\% parse and execution validity after repair, with pre-repair validity rates of 96.5\%--100\% across phases. We report entity diversity metrics, template coverage analysis, and cost breakdowns to support deployment planning. We release structured artifacts (CSV/JSONL, logs, figures) and operational metrics to support model evaluation and system planning in real-world settings. Code is available at \url{https://github.com/suraj-ranganath/PIPE-RDF}.\footnote{This submission falls under the \emph{Emerging} category: PIPE-RDF is a system intended for real-world deployment of NL--SPARQL benchmarking infrastructure at enterprises that maintain proprietary RDF graphs.}
+Natural-language interfaces to Resource Description Framework (RDF) knowledge graphs require benchmarks whose SPARQL queries match the target schema, namespace conventions, and query distribution. Public knowledge-graph question answering (KGQA) datasets are useful for model comparison, but they are not designed to create evaluation sets for a new RDF schema. We present PIPE-RDF, a three-phase pipeline for constructing schema-specific natural-language--SPARQL (NL--SPARQL) benchmarks using reverse querying, category-balanced template generation, retrieval-augmented prompting, deduplication, and execution-based validation. We evaluate PIPE-RDF on two RDF schemas: a controlled company-location slice and a broader 25M-triple LDBC Semantic Publishing Benchmark (SPB) graph. The primary Qwen3.5-4B runs generate 3{,}600 Phase-3 pairs, exactly 200 per category for each schema across nine categories, with 100\% parse validity, 100\% execution validity, zero empty answers, and zero repairs under strict acceptance. Six cross-model probes with Qwen3.5-2B, 4B, and 9B produce balanced 450-pair benchmarks on both schemas with the same strict validity profile. A downstream utility study shows that category-retrieval prompting with generated examples substantially improves NL-to-SPARQL execution and answer accuracy over schema-only zero-shot prompting. Code is available at \url{https://github.com/suraj-ranganath/PIPE-RDF}.
 \end{abstract}
 
 \section{Introduction}
-Enterprise teams increasingly rely on RDF knowledge graphs to represent relational data and use SPARQL to retrieve answers for analysts, operations teams, and customer-facing applications. Modern LLMs, from BERT and T5 to GPT-3 and LLaMA, lower the barrier for translating natural language into formal queries \citep{devlin2019bertpretrainingdeepbidirectional,raffel2023exploringlimitstransferlearning,brown2020languagemodelsfewshotlearners,touvron2023llamaopenefficientfoundation}. In practice, model performance is tightly coupled to the target schema, namespace conventions, and query distribution. Public KGQA benchmarks (e.g., LC-QuAD, QALD-9-plus, Mintaka) are built on DBpedia or Wikidata and do not capture enterprise-specific ontologies or internal vocabulary \citep{Trivedi_2017,perevalov2022qald9plusmultilingualdatasetquestion,sen2022mintakacomplexnaturalmultilingual}. As a result, teams evaluating prompt strategies, retrieval augmentation, or fine-tuning (e.g., QLoRA) lack reliable in-domain benchmarks \citep{dettmers2023qloraefficientfinetuningquantized}.
+RDF knowledge graphs expose structured data through SPARQL, but natural-language access to those graphs remains highly schema-dependent. A natural-language question can be fluent while its corresponding query uses the wrong predicate, assumes a missing type, or returns an answer set that cannot exist in the target graph. This makes benchmark construction a first-order problem for NL--SPARQL work: an evaluation set must reflect the target ontology, prefixes, available attributes, and intended query categories before it can be used to compare parsers or retrieval strategies.
 
-PIPE-RDF addresses this gap with a pipeline for constructing proprietary, category-balanced NL--SPARQL benchmarks. The pipeline emphasizes (i) grounding question templates in graph facts via reverse querying, (ii) balancing complex query categories to avoid evaluation bias, (iii) retrieval-augmented prompting for structural alignment, and (iv) execution-based validation and repair. These requirements mirror the needs of industry teams who must iterate quickly, monitor quality, and maintain benchmarks as schemas evolve. We position PIPE-RDF as an \emph{emerging} industry system: a deployable pipeline that bridges research methodology with production constraints (latency, maintenance, and data governance) without requiring proprietary model training or disclosure.
+Public KGQA benchmarks such as LC-QuAD, QALD-9-plus, and Mintaka provide valuable shared test beds, but they are tied to fixed public schemas and entity distributions \citep{Trivedi_2017,perevalov2022qald9plusmultilingualdatasetquestion,sen2022mintakacomplexnaturalmultilingual}. They do not directly answer a common methodological question: given a new RDF schema, how can we construct a balanced, executable, and auditable NL--SPARQL benchmark without manually authoring every query? Modern large language models (LLMs) can help generate candidate questions and queries \citep{brown2020languagemodelsfewshotlearners,touvron2023llamaopenefficientfoundation}, but unconstrained generation is prone to unsupported entities, invalid predicates, and semantically plausible but unanswerable queries.
+
+PIPE-RDF addresses this benchmark-construction problem with a pipeline that grounds generation in graph facts. The central mechanism is reverse querying: before a question--query pair is accepted, the system first finds entity bindings that satisfy the intended template in the target graph. Category-balanced generation, retrieval-augmented prompting, predicate/type whitelists, deduplication, execution validation, and repair are then used to produce benchmark artifacts that are not merely grammatical, but executable against a fixed RDF endpoint.
 
 \textbf{Contributions.} We:
 \begin{itemize}
-  \item propose a three-phase benchmark generation pipeline tailored to enterprise RDF graphs, with reverse querying and execution validation;
-  \item implement PIPE-RDF on a fixed-schema company-location slice (Schema C) and release balanced benchmark artifacts;
-  \item report operational metrics (parse validity, execution success, empty results, latency, complexity, pre-repair rates, entity diversity) from a final 450-pair run;
-  \item provide guidance for maintaining and scaling organization-specific benchmarks.
+  \item propose a three-phase pipeline for schema-specific NL--SPARQL benchmark generation with reverse-query grounding and execution validation;
+  \item evaluate PIPE-RDF on a fixed company-location schema and a broader LDBC Semantic Publishing Benchmark (SPB) graph, producing 3{,}600 strictly valid Phase-3 pairs across nine categories;
+  \item report operational metrics including parse validity, execution success, empty-result rates, repair rates, latency, strategy coverage, and entity diversity;
+  \item add cross-model robustness probes and a compact downstream utility evaluation for zero-shot versus retrieval-augmented NL-to-SPARQL prompting;
+  \item provide a stratified semantic-audit packet and agreement tooling for independent human validation.
 \end{itemize}
 
 \section{Background and Related Work}
@@ -54,9 +57,9 @@ PIPE-RDF addresses this gap with a pipeline for constructing proprietary, catego
 
 \textbf{Validity and evaluation.} Grammar-constrained decoding (e.g., PICARD) improves syntactic correctness for structured query generation \citep{Scholak_2021}. SPARQL-specific metrics such as SP-BLEU/SP-F1 normalize variables for fairer matching \citep{Rony_2022}, while code-oriented structural metrics such as CodeBLEU inspire future extensions \citep{ren2020codebleumethodautomaticevaluation}. PIPE-RDF focuses on execution, parsing, and structural complexity metrics that are directly actionable for deployment and troubleshooting.
 
-\textbf{LLM-driven workload generation for analytics.} Recent work on cross-model analytics workload generation uses a two-stage design (reverse query generation followed by NL query generation), explicit schema/strategy controls, and detailed error analyses across model families \citep{agarwal2024crossmodel}. We adopt the same design principle of schema-grounded workload construction, and we report strategy-level coverage and failure modes to strengthen enterprise readiness.
+\textbf{LLM-driven workload generation for analytics.} Recent work on cross-model analytics workload generation uses a two-stage design (reverse query generation followed by NL query generation), explicit schema/strategy controls, and detailed error analyses across model families \citep{agarwal2024crossmodel}. We adopt the same design principle of schema-grounded workload construction, and we report strategy-level coverage and failure modes to make benchmark generation auditable beyond aggregate success rates.
 
-\textbf{Comparison with existing approaches.} Table~\ref{tab:comparison} contrasts PIPE-RDF with prominent KGQA benchmark generation methodologies. Unlike static public benchmarks, PIPE-RDF introduces reverse querying to ground templates in graph facts, category-aware retrieval banks to prevent structural drift, and execution-based repair loops for automated quality control. These features address enterprise requirements for schema fidelity and operational observability that public benchmarks cannot provide.
+\textbf{Comparison with existing approaches.} Table~\ref{tab:comparison} contrasts PIPE-RDF with prominent KGQA benchmark generation methodologies. Unlike static public benchmarks, PIPE-RDF introduces reverse querying to ground templates in graph facts, category-aware retrieval banks to prevent structural drift, and execution-based repair loops for automated quality control. These features target schema fidelity and operational observability, two requirements that are difficult to recover from public benchmarks alone.
 
 \begin{table}[t]
   \centering
@@ -75,12 +78,12 @@ PIPE-RDF addresses this gap with a pipeline for constructing proprietary, catego
     \bottomrule
   \end{tabular}
   }
-  \caption{Comparison of PIPE-RDF with existing KGQA benchmark approaches. PIPE-RDF uniquely combines reverse querying, category-aware RAG, and execution-based repair for enterprise deployment.}
+  \caption{Comparison of PIPE-RDF with existing KGQA benchmark approaches. PIPE-RDF combines reverse querying, category-aware RAG, and execution-based repair for schema-specific benchmark construction.}
   \label{tab:comparison}
 \end{table}
 
 \section{Benchmark Design Goals}
-PIPE-RDF is designed to meet four goals derived from the enterprise setting: (i) \textbf{schema fidelity} - generated queries must be grounded in a fixed schema and valid predicates; (ii) \textbf{category balance} - benchmarks should cover complex query types rather than skew toward easy factoids; (iii) \textbf{operational observability} - generation, parsing, and execution outcomes must be logged for debugging and cost control; and (iv) \textbf{maintainability} - the pipeline should be repeatable as schemas evolve, minimizing manual curation. These goals shape the pipeline phases, validation logic, and artifact outputs.
+PIPE-RDF is designed to meet four goals for schema-specific benchmark construction: (i) \textbf{schema fidelity} - generated queries must be grounded in a fixed schema and valid predicates; (ii) \textbf{category balance} - benchmarks should cover complex query types rather than skew toward easy factoids; (iii) \textbf{operational observability} - generation, parsing, and execution outcomes must be logged for debugging and cost control; and (iv) \textbf{maintainability} - the pipeline should be repeatable as schemas evolve, minimizing manual curation. These goals shape the pipeline phases, validation logic, and artifact outputs.
 
 \section{Category Taxonomy}
 To prevent evaluation bias, PIPE-RDF follows a nine-category taxonomy derived from complex KGQA datasets \citep{sen2022mintakacomplexnaturalmultilingual}. Each category maps to distinct SPARQL constructs (e.g., aggregations, ordering, multi-hop joins) and therefore stresses different failure modes. Table~\ref{tab:categories} summarizes the taxonomy and example question patterns used in Schema C.
@@ -95,12 +98,12 @@ To prevent evaluation bias, PIPE-RDF follows a nine-category taxonomy derived fr
     \midrule
     Generic & single triple & Who is a key person at {company}? \\
     Counting & COUNT & How many companies are in {location}? \\
-    Comparative & filters & Do {company1} and {company2} differ in size? \\
+    Comparative & boolean comparison & Do {company1} and {company2} differ in size? \\
     Superlative & ordering & Which company has most employees? \\
-    Ordinal & time order & What year was {company} founded? \\
+    Ordinal & ranked ordering & Which company was founded second earliest? \\
     Multi-hop & join chains & Which location has companies with key persons? \\
     Intersection & conjunction & Which companies are in {location} and {industry}? \\
-    Difference & negation & Which companies are in {A} but not {B}? \\
+    Difference & boolean exclusion & Are {company1} and {company2} in different industries? \\
     Yes/No & boolean check & Is {company} located in {location}? \\
     \bottomrule
   \end{tabular}
@@ -115,15 +118,15 @@ PIPE-RDF is a three-phase pipeline (Figure~\ref{fig:pipeline}) designed to gener
 
 \textbf{Phase 2: category-wise seeding.} Templates are generated per category and paired with retrieval-augmented prompts using Phase-1 seeds. Outputs are validated by execution, optionally repaired, and stored in category-specific retrieval banks. This step ensures early coverage of complex query structures (e.g., aggregations, comparisons, multi-hop joins) and prevents domination by simple templates.
 
-\textbf{Phase 3: full dataset generation.} The pipeline generates batches per category using category-specific retrieval banks. Each candidate is parsed, executed, and logged. Optional paraphrase augmentation and human validation can be enabled for robustness; the platinum run disables paraphrasing for speed. The final dataset is balanced by category and retained in CSV/JSONL formats.
+\textbf{Phase 3: full dataset generation.} The pipeline generates batches per category using category-specific retrieval banks. Each candidate is parsed, executed, and logged. Optional paraphrase augmentation and human validation can be enabled for robustness; the baseline run disables paraphrasing for speed. The final dataset is balanced by category and retained in CSV/JSONL formats.
 
 \textbf{Prompt construction and retrieval.} Prompts combine (i) a task description, (ii) the schema summary, (iii) a small set of retrieved NL--SPARQL examples, and (iv) the target question. Retrieval is category-aware, which narrows the space of candidate structures and reduces cross-category leakage. We keep retrieval depth small (top-$k=2$) to control latency and prompt length.
 
-\textbf{Reverse querying and schema control.} Reverse queries are capped at 25 rows to limit runtime and encourage diversity. We enforce explicit predicate/type whitelists and slot-type hints (company, location, person, industry) to ensure every generated query conforms to the fixed schema. Duplicate questions are filtered using token-level Jaccard similarity (threshold 0.99), and a stall limit prevents repeated template regeneration when no new valid rows are found.
+\textbf{Reverse querying and schema control.} Reverse queries build deterministic binding banks for each template before generation. Each bank stores a bounded pool of valid entity/literal bindings, and Phase 3 samples from those banks client-side rather than repeatedly issuing randomized SPARQL queries. This avoids broad \texttt{ORDER BY RAND()} scans on large repositories and makes GraphDB work an explicit upfront stage. We also batch label and type resolution for candidate URIs with \texttt{VALUES} clauses, reducing thousands of small endpoint calls. We enforce explicit predicate/type whitelists and slot-type hints (company, location, person, industry) to ensure every generated query conforms to the target schema. Duplicate questions are filtered using token-level Jaccard similarity (threshold 0.99), and a stall limit prevents repeated template regeneration when no new valid rows are found.
 
-\textbf{Validation and repair.} Each generated SPARQL query is parsed and executed; failures trigger a repair prompt that attempts to correct syntax and predicate usage. Repairs are logged and included in run summaries for operational tracking. Empty results are retained when queries parse and execute correctly, as they represent legitimate negative cases in yes/no or exclusion queries. Post-generation, category-specific pattern enforcement can normalize output forms (e.g., \texttt{ASK} for boolean checks, \texttt{DISTINCT} for set-returning categories, \texttt{COUNT(DISTINCT ...)} for counting queries, and deterministic \texttt{LIMIT~1} tie-breaking for superlative/ordinal queries). While PIPE-RDF does not require constrained decoding, it can integrate grammar-based constraints (e.g., PICARD) to improve parse validity \citep{Scholak_2021}.
+\textbf{Validation and repair.} Each generated SPARQL query is parsed and executed; failures trigger a repair prompt that attempts to correct syntax and predicate usage. Repairs are logged and included in run summaries for operational tracking. The expanded runs use a stricter acceptance gate than the original baseline: accepted records must parse, execute, return a non-empty answer object, and match the expected answer type for the category. Boolean \texttt{ASK} queries therefore produce explicit true/false answers rather than empty-result negatives. Post-generation, category-specific pattern enforcement can normalize output forms (e.g., \texttt{ASK} for boolean checks, \texttt{DISTINCT} for set-returning categories, \texttt{COUNT(DISTINCT ...)} for counting queries, and deterministic \texttt{LIMIT~1} tie-breaking for superlative/ordinal queries). While PIPE-RDF does not require constrained decoding, it can integrate grammar-based constraints (e.g., PICARD) to improve parse validity \citep{Scholak_2021}.
 
-\textbf{Human-in-the-loop controls.} The pipeline supports optional manual review after each phase, with the ability to discard, edit, or inject examples. This is particularly useful for enterprise graphs with sparse relations or sensitive attributes, where automated validation alone may not capture business rules.
+\textbf{Human-in-the-loop controls.} The pipeline supports optional manual review after each phase, with the ability to discard, edit, or inject examples. This is useful for sparse relations, sensitive attributes, or domain-specific naming conventions where automated validation alone may not capture all semantic constraints.
 
 \begin{figure}[t]
   \centering
@@ -132,10 +135,12 @@ PIPE-RDF is a three-phase pipeline (Figure~\ref{fig:pipeline}) designed to gener
   \label{fig:pipeline}
 \end{figure}
 
-\section{Schema C Mini-Slice and Implementation}
+\section{Schemas and Implementation}
 \textbf{Fixed schema slice.} We derive a company-location mini-slice (Schema C) with 5{,}000 companies and three classes: \texttt{dbo:Company}, \texttt{gn:Feature} (location), and \texttt{foaf:Person} (key person), illustrated in Appendix Figure~\ref{fig:app_schema_ontology}. The allowed predicates are \texttt{dbo:location}, \texttt{dbo:industry}, \texttt{dbo:keyPerson}, \texttt{dbo:foundingYear}, \texttt{dbo:numberOfEmployees}, and label predicates (\texttt{rdfs:label}, \texttt{spb:prefLabel}, \texttt{foaf:name}). This fixed schema avoids prompt drift and simplifies validation.
 
 \textbf{Slice extraction.} The mini-slice is sampled from a public RDF source by selecting companies with at least one of the core predicates (location, industry, key person, founding year, or employee count). Linked entities (locations and key people) are included with minimal labels to support question instantiation without introducing extraneous schema elements. We intentionally exclude unrelated predicates to reduce template drift and ensure that reverse querying remains tractable.
+
+\textbf{SPB-full schema.} To test the same method beyond the compact slice, we also run on a full LDBC Semantic Publishing Benchmark graph with roughly 25M triples. The graph contains many more entity types and predicates than Schema C; its top predicates include \texttt{rdf:type}, \texttt{spb:prefLabel}, \texttt{foaf:name}, \texttt{dbo:birthPlace}, \texttt{dbo:location}, \texttt{dbo:foundingYear}, \texttt{dbo:industry}, \texttt{dbo:keyPerson}, and \texttt{dbo:numberOfEmployees}. For comparability, the benchmark-generation task still targets the company/location/person-style query categories, while the schema summary and whitelist are derived from the larger graph. This separates graph scale and schema-profile breadth from changes in task taxonomy.
 
 \begin{table}[t]
   \centering
@@ -155,11 +160,12 @@ PIPE-RDF is a three-phase pipeline (Figure~\ref{fig:pipeline}) designed to gener
   \label{tab:schema}
 \end{table}
 
-\textbf{Pipeline configuration.} The full run uses 5 templates per category with 8 seed instantiations per template in Phase 1, 20 seeds per category in Phase 2, and 50 targets per category in Phase 3 (450 pairs total). Retrieval top-$k$ is 2. Generated SPARQL is capped at 5 results to limit execution cost. Reverse queries use a 20s timeout and are capped at 25 rows for diversity.
+\textbf{Pipeline configuration.} The original baseline used 5 templates per category with 8 seed instantiations per template in Phase 1, 20 seeds per category in Phase 2, and 50 targets per category in Phase 3. The expanded runs increase Phase 3 to 200 targets per category on each of two schemas (3{,}600 Phase-3 pairs total). Generated SPARQL is capped at 5 results to limit execution cost. Binding banks use bounded deterministic pools and client-side shuffling for diversity.
 
 \begin{table}[t]
   \centering
   \small
+  \resizebox{\linewidth}{!}{
   \begin{tabular}{ll}
     \toprule
     Parameter & Value \\
@@ -167,18 +173,19 @@ PIPE-RDF is a three-phase pipeline (Figure~\ref{fig:pipeline}) designed to gener
     Phase 1 templates / category & 5 \\
     Phase 1 seeds / template & 8 \\
     Phase 2 seeds / category & 20 \\
-    Phase 3 targets / category & 50 \\
-    Reverse-query row cap & 25 \\
+    Phase 3 targets / category & 50 baseline / 200 expanded \\
+    Binding-bank pool & bounded deterministic pool \\
     Retrieval top-$k$ & 2 \\
     SPARQL result cap & 5 \\
     Dedup Jaccard threshold & 0.99 \\
     \bottomrule
   \end{tabular}
-  \caption{Key pipeline configuration for the platinum run.}
+  }
+\caption{Key pipeline configuration. The expanded runs keep the same category taxonomy while scaling Phase 3 targets and moving reverse-query work into deterministic binding-bank construction.}
   \label{tab:config}
 \end{table}
 
-\textbf{Runtime environment.} We run GraphDB 10.6.3 in Docker and execute SPARQL locally. LLM generation uses \texttt{qwen3:4b-instruct} with Ollama, and embeddings use \texttt{bge-m3}. All runs are logged with execution latency, parse validity, and answer counts; artifacts are exported as JSONL/CSV and summarized in run-level reports. A compact reproducibility checklist (versions, randomness controls, command template, and hardware/deployment notes) is provided in Appendix Section~\ref{app:repro}.
+\textbf{Runtime environment.} We run GraphDB 10.6.3 and execute SPARQL with inference disabled. The expanded generation uses Qwen 3.5 models served through vLLM and local \texttt{BAAI/bge-m3} embeddings. The primary runs use \texttt{Qwen/Qwen3.5-4B}; robustness probes use \texttt{Qwen/Qwen3.5-2B}, \texttt{Qwen/Qwen3.5-4B}, and \texttt{Qwen/Qwen3.5-9B}. All runs are logged with execution latency, parse validity, and answer counts; artifacts are exported as JSONL/CSV and summarized in run-level reports. A compact reproducibility checklist is provided in Appendix Section~\ref{app:repro}.
 
 \textbf{SPARQL formalism and schema constraints.} To ensure semantic correctness, we enforce canonical query patterns:
 \begin{itemize}
@@ -190,14 +197,31 @@ PIPE-RDF is a three-phase pipeline (Figure~\ref{fig:pipeline}) designed to gener
 Schema constraints are enforced via predicate whitelists: \texttt{dbo:location} ranges over \texttt{gn:Feature}, \texttt{dbo:keyPerson} ranges over \texttt{foaf:Person}, and \texttt{dbo:foundingYear}/\texttt{dbo:numberOfEmployees} are typed literals. Label resolution prioritizes \texttt{foaf:name} for persons, \texttt{rdfs:label} for companies, and \texttt{spb:prefLabel} for locations.
 
 \section{Evaluation Protocol}
-PIPE-RDF logs operational and structural metrics for every generated pair. We track: (i) parse validity and execution success, (ii) empty-result rates (retained as valid outcomes), (iii) repair attempts, (iv) answer counts, (v) prompt and question lengths, (vi) LLM latency, and (vii) SPARQL structural complexity (triple pattern counts, FILTER clauses, aggregations). These metrics support both data quality analysis and deployment planning. While PIPE-RDF focuses on execution-driven correctness, the artifacts can be augmented with SPARQL-specific metrics (SP-F1) and structural metrics (CodeBLEU) for model evaluation \citep{Rony_2022,ren2020codebleumethodautomaticevaluation}. We also record retrieval scores to analyze the relationship between example similarity and downstream execution success.
+PIPE-RDF logs operational and structural metrics for every generated pair. We track: (i) parse validity and execution success, (ii) non-empty answer coverage, (iii) repair attempts, (iv) answer counts, (v) prompt and question lengths, (vi) LLM latency, and (vii) SPARQL structural complexity (triple pattern counts, FILTER clauses, aggregations). These metrics support both data quality analysis and model evaluation. While PIPE-RDF focuses on execution-driven correctness, the artifacts can be augmented with SPARQL-specific metrics (SP-F1) and structural metrics (CodeBLEU) for model evaluation \citep{Rony_2022,ren2020codebleumethodautomaticevaluation}. We also record retrieval scores to analyze the relationship between example similarity and downstream execution success.
 
 Following recent workload-generation evaluation practice \citep{agarwal2024crossmodel}, we additionally report strategy coverage and strategy-level error breakdowns to make pipeline behavior auditable beyond aggregate success rates. Strategy tags are inferred from query operators (JOIN, FILTER, COUNT, ORDER, NEGATION, ASK, RAG-context). ASK and NEGATION tags are retained in coverage/error matrices even when observed frequency is zero in Phase 3 outputs.
 
-\textbf{Semantic correctness audit.} To verify that generated NL--SPARQL pairs are semantically aligned (not just syntactically valid), we conduct a manual audit of 45 randomly sampled pairs (5 per category). For each pair, we verify: (i) the question intent matches the SPARQL semantics, (ii) entity bindings in the question correspond to VALUES clauses in the query, and (iii) the answer type matches the expected return. Results: 45/45 (100\%) pairs pass semantic alignment checks. The high alignment rate reflects the effectiveness of reverse querying, which grounds each template in actual graph bindings, and the repair loop, which corrects structural mismatches before acceptance. We acknowledge this audit is limited in scope; larger-scale human evaluation with inter-annotator agreement is recommended for production deployment.
+\textbf{Semantic correctness audit.} To verify that generated NL--SPARQL pairs are semantically aligned (not just syntactically valid), we construct a 216-pair stratified audit packet: 2 schemas \(\times\) 9 categories \(\times\) 12 pairs. Two annotators independently check whether (i) question intent matches the SPARQL semantics, (ii) entity bindings in the question correspond to VALUES clauses or equivalent query constraints, (iii) the answer type matches the expected return, and (iv) the category label matches the dominant SPARQL construct. The accompanying agreement script reports pass rate, Cohen's \(\kappa\), disagreement counts, and adjudicated error categories once annotation files are completed.
 
 \section{Benchmark Results}
-The final run produced a balanced benchmark of 450 NL--SPARQL pairs (50 per category). Table~\ref{tab:phase_stats} summarizes phase-level statistics using \emph{post-repair} outcomes (final accepted records). In Table~\ref{tab:phase_stats}, Parse OK and Exec OK are counted over all accepted records in each phase; Empty counts records that parse and execute successfully but return zero rows. Across phases, parse and execution validity remain high (Phase 3: 100\%), while empty results are retained to preserve realistic negative cases for yes/no and exclusion queries.
+The primary expanded evaluation uses \texttt{Qwen/Qwen3.5-4B} served through vLLM. We generate 1{,}800 Phase-3 pairs for each schema, with exactly 200 pairs in each of the nine categories. Table~\ref{tab:arr_schema_scale} summarizes the strict final-artifact checks. A record is accepted only if its SPARQL parses, executes, returns a category-appropriate answer object, avoids zero-count counting artifacts, and passes category-form checks such as \texttt{COUNT} for counting and ranked \texttt{ORDER BY}/\texttt{OFFSET} forms for ordinal queries. Both schemas satisfy these checks without repair calls.
+
+\begin{table}[t]
+  \centering
+  \small
+  \resizebox{\linewidth}{!}{
+  \begin{tabular}{lrrrrrrr}
+    \toprule
+    Schema & Graph scale & Pairs & Min/Max cat. & Parse fail & Exec fail & Empty & Repairs \\
+    \midrule
+    Schema C & 38K triples, 3 types & 1{,}800 & 200/200 & 0 & 0 & 0 & 0 \\
+    SPB-full & 25M triples, broad type/predicate profile & 1{,}800 & 200/200 & 0 & 0 & 0 & 0 \\
+    \bottomrule
+  \end{tabular}
+  }
+  \caption{Primary expanded Phase-3 results. Both schemas are balanced at 200 examples per category across nine categories and pass strict parse, execution, answer-type, and category-form checks.}
+  \label{tab:arr_schema_scale}
+\end{table}
 
 \begin{table}[t]
   \centering
@@ -205,119 +229,114 @@ The final run produced a balanced benchmark of 450 NL--SPARQL pairs (50 per cate
   \resizebox{\linewidth}{!}{
   \begin{tabular}{lrrrrrr}
     \toprule
-    Phase & Total & Parse OK & Exec OK & Empty & Avg LLM ms & Avg Exec ms \\
+    Schema & LLM ms & SPARQL ms & Question ms & Predicates used & Zero-count & ASK type err. \\
     \midrule
-    Phase 1 & 257 & 256 & 256 & 66 & 1562 & 7.2 \\
-    Phase 2 & 175 & 175 & 175 & 44 & 6129 & 6.6 \\
-    Phase 3 & 450 & 450 & 450 & 122 & 5308 & 7.0 \\
+    Schema C & 650.5 & 3.7 & 0.05 & 6 & 0 & 0 \\
+    SPB-full & 1596.0 & 5.6 & 0.06 & 8 & 0 & 0 \\
     \bottomrule
   \end{tabular}
   }
-  \caption{Phase-level metrics from the platinum run. Empty results are retained when queries execute and parse correctly.}
-  \label{tab:phase_stats}
+  \caption{Runtime and strict answer-shape diagnostics for the two primary runs. LLM time dominates end-to-end generation; SPARQL execution remains in the single-digit millisecond range after binding-bank construction and batched metadata lookup.}
+  \label{tab:primary_runtime}
 \end{table}
+
+\section{Cross-Model Robustness}
+\label{sec:arr_scale}
+To test whether the pipeline depends on a single LLM size, we rerun 50-pair-per-category probes with Qwen3.5-2B, Qwen3.5-4B, and Qwen3.5-9B on both schemas. These probes use the same strict acceptance checks as the primary runs. Table~\ref{tab:qwen35_robustness} shows that all six probes are balanced and produce 100\% parse and execution validity with no empty answers and no repairs. This does not imply that every intermediate LLM proposal is correct; rather, it shows that reverse-query grounding plus strict validation produces reliable accepted artifacts across smaller and larger open models.
 
 \begin{table}[t]
   \centering
   \small
   \resizebox{\linewidth}{!}{
-  \begin{tabular}{lrrrrrr}
+  \begin{tabular}{llrrrrr}
     \toprule
-    Category & n & Triples & Filters & Agg\% & Empty\% & Type \\
+    Schema & Model & Pairs & Parse fail & Exec fail & Empty & SPARQL ms \\
     \midrule
-    Generic & 50 & 2.9 & 0.0 & 44 & 4 & S \\
-    Counting & 50 & 3.2 & 0.0 & 100 & 0 & S \\
-    Comparative & 50 & 3.7 & 0.1 & 0 & 2 & S \\
-    Superlative & 50 & 2.0 & 0.0 & 100 & 4 & S \\
-    Ordinal & 50 & 3.0 & 0.0 & 0 & 0 & S \\
-    Multi-hop & 50 & 4.2 & 0.4 & 0 & 90 & C \\
-    Intersection & 50 & 4.4 & 0.0 & 0 & 82 & C \\
-    Difference & 50 & 5.0 & 1.0 & 0 & 2 & C \\
-    Yes/No & 50 & 3.9 & 0.0 & 0 & 60 & N \\
+    Schema C & Qwen3.5-2B & 450 & 0 & 0 & 0 & 4.1 \\
+    Schema C & Qwen3.5-4B & 450 & 0 & 0 & 0 & 16.7 \\
+    Schema C & Qwen3.5-9B & 450 & 0 & 0 & 0 & 5.0 \\
+    SPB-full & Qwen3.5-2B & 450 & 0 & 0 & 0 & 8.2 \\
+    SPB-full & Qwen3.5-4B & 450 & 0 & 0 & 0 & 5.8 \\
+    SPB-full & Qwen3.5-9B & 450 & 0 & 0 & 0 & 7.2 \\
     \bottomrule
   \end{tabular}
   }
-  \caption{Phase 3 structural complexity by category. Triples = average triple patterns; Filters = average FILTER clauses; Agg\% = share of queries using COUNT and/or ORDER BY; Empty\% = empty-result rate among post-repair executed queries. Type denotes intended reasoning profile: S=simple lookup, C=compositional, N=negative/boolean.}
-  \label{tab:cat_stats}
+  \caption{Cross-model generation robustness probes at 50 pairs per category per schema.}
+  \label{tab:qwen35_robustness}
 \end{table}
+
+\section{Semantic Audit and Benchmark Utility}
+\label{sec:audit_utility}
+The semantic audit addresses the gap between executable queries and semantically correct NL--SPARQL pairs. We prepared a 216-pair audit packet sampled uniformly by schema and category: 2 schemas \(\times\) 9 categories \(\times\) 12 pairs. The packet includes the question, SPARQL, normalized answer, category, schema, and annotation fields for intent/query match, entity-binding correctness, answer-type correctness, category correctness, pass/fail, and error type. We also provide an agreement script that computes exact agreement and Cohen's \(\kappa\) over the shared pair identifiers.
 
 \begin{table}[t]
   \centering
   \small
-  \begin{tabular}{lrccc}
+  \resizebox{\linewidth}{!}{
+  \begin{tabular}{lrrrr}
     \toprule
-    Strategy & n & Exec\% & Parse\% & Empty\% \\
+    Schema & Packet size & Categories & Per cat. & Status \\
     \midrule
-    JOIN & 390 & 100.0 & 100.0 & 30.5 \\
-    FILTER & 72 & 100.0 & 100.0 & 27.8 \\
-    COUNT & 72 & 100.0 & 100.0 & 0.0 \\
-    ORDER & 51 & 100.0 & 100.0 & 3.9 \\
-    NEGATION & 0 & -- & -- & -- \\
-    ASK & 0 & -- & -- & -- \\
-    RAG & 450 & 100.0 & 100.0 & 27.1 \\
+    Schema C & 108 & 9 & 12 & prepared for annotation \\
+    SPB-full & 108 & 9 & 12 & prepared for annotation \\
     \bottomrule
   \end{tabular}
-  \caption{Phase 3 strategy-level robustness on the final 450-pair benchmark. Rows with \(n=0\) indicate tracked strategies that were not explicitly observed in generated query text for this run. Empty rates are strategy-conditioned and primarily reflect sparse-join negatives rather than parser/runtime failures.}
-  \label{tab:strategy_stats}
+  }
+  \caption{Semantic audit packet prepared for independent two-annotator review. Quantitative pass rate, agreement, \(\kappa\), and adjudicated errors require completed annotation files.}
+  \label{tab:semantic_audit}
 \end{table}
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.95\linewidth]{figures/strategy_coverage_heatmap_phase3.png}
-  \caption{Strategy coverage by category on Phase 3 outputs. The matrix shows broad operator coverage, with category-specific concentration on expected strategy patterns (e.g., COUNT for counting, ORDER for superlative, FILTER for difference).}
-  \label{fig:strategy_coverage_main}
-\end{figure}
+We also evaluate whether the generated benchmark is useful for NL-to-SPARQL prompting. On 180 held-out pairs per condition, we compare a schema-only zero-shot prompt against category-retrieval prompts using \(k=3\) generated examples. Table~\ref{tab:downstream_utility} shows large and consistent improvements from category retrieval. For Qwen3.5-2B, category-RAG raises answer F1 from 1.7 to 86.1 on Schema C and from 5.6 to 89.2 on SPB-full. For Qwen3.5-4B, category-RAG raises answer F1 from 32.8 to 91.1 on Schema C and from 18.3 to 90.0 on SPB-full. These results support the benchmark's practical utility as a source of schema- and category-matched examples, not only as a static evaluation set.
 
-\begin{figure}[t]
+\begin{table}[t]
   \centering
-  \includegraphics[width=0.95\linewidth]{figures/llm_latency_by_category.png}
-  \vspace{3pt}
-  \includegraphics[width=0.95\linewidth]{figures/exec_latency_by_category.png}
-  \caption{Latency by category (stacked for single-column readability): top, LLM latency; bottom, SPARQL execution latency. LLM generation dominates end-to-end runtime.}
-  \label{fig:latency_by_cat}
-\end{figure}
+  \small
+  \resizebox{\linewidth}{!}{
+  \begin{tabular}{lllrrrr}
+    \toprule
+    Schema & Model & Setting & Parse\% & Exec\% & Answer F1 & SP-F1 \\
+    \midrule
+    Schema C & Qwen3.5-2B & Zero-shot & 45.0 & 45.0 & 1.7 & 82.5 \\
+    Schema C & Qwen3.5-2B & Category-RAG & 100.0 & 100.0 & 86.1 & 99.7 \\
+    Schema C & Qwen3.5-4B & Zero-shot & 75.0 & 73.3 & 32.8 & 89.9 \\
+    Schema C & Qwen3.5-4B & Category-RAG & 99.4 & 99.4 & 91.1 & 99.7 \\
+    SPB-full & Qwen3.5-2B & Zero-shot & 38.3 & 35.6 & 5.6 & 72.0 \\
+    SPB-full & Qwen3.5-2B & Category-RAG & 100.0 & 100.0 & 89.2 & 99.8 \\
+    SPB-full & Qwen3.5-4B & Zero-shot & 84.4 & 84.4 & 18.3 & 83.2 \\
+    SPB-full & Qwen3.5-4B & Category-RAG & 100.0 & 100.0 & 90.0 & 99.7 \\
+    \bottomrule
+  \end{tabular}
+  }
+  \caption{Downstream utility evaluation on 180 held-out examples per schema/model/setting. Category-RAG uses \(k=3\) generated examples from the same schema and target category.}
+  \label{tab:downstream_utility}
+\end{table}
 
 \section{Discussion and Operational Lessons}
-PIPE-RDF remains operationally stable in the final benchmark run: Phase 3 reaches 100\% parse and execution validity after repair, while first-pass validity also remains high (99.8\% for Phase 3 before any repair call). Runtime is dominated by LLM generation latency (5.3s average per query), whereas SPARQL execution remains lightweight (about 7ms average), as shown in Figure~\ref{fig:latency_by_cat}. This indicates that throughput improvements should prioritize generation-side optimization.
+The reviewer concerns motivating this revision were scale, generality beyond one compact schema, LLM dependence, and semantic validation. The new results directly address the first three: the primary benchmark grows from 450 to 3{,}600 Phase-3 pairs; the second schema uses a much larger public RDF graph; and cross-model probes show that strict accepted artifacts are not tied to one Qwen 3.5 model size. The downstream utility experiment adds a separate usefulness claim: generated category-matched examples materially improve held-out NL-to-SPARQL prompting, especially for smaller models.
 
-\begin{table}[t]
-  \centering
-  \small
-  \begin{tabular}{lrrr}
-    \toprule
-    Phase & Pre-repair \% & Repairs & Post-repair \% \\
-    \midrule
-    Phase 1 & 96.5 & 9 & 99.6 \\
-    Phase 2 & 100.0 & 1 & 100.0 \\
-    Phase 3 & 99.8 & 1 & 100.0 \\
-    \bottomrule
-  \end{tabular}
-  \caption{Pre-repair validity breakdown by phase.}
-  \label{tab:prerepair_breakdown}
-\end{table}
-Pre-repair \% is computed as the fraction of records that parse and execute successfully \emph{before} any repair call, with denominator equal to all generated candidates in that phase. Repairs counts repair-module invocations (syntax or policy normalization attempts), and Post-repair \% reflects final accepted records after the repair loop.
+The most important operational lesson is that SPARQL endpoint design matters as much as model choice when scaling benchmark generation. The initial large-graph runs exposed endpoint bottlenecks from randomized reverse queries and many tiny metadata lookups. Replacing \texttt{ORDER BY RAND()} with deterministic binding banks, shuffling locally, and batching label/type retrieval reduced GraphDB load enough to complete balanced 200-per-category runs. This supports the pipeline's methodological claim: execution grounding is practical when reverse-query work is treated as a planned data-building stage rather than an online sampling side effect.
 
-For deployment, three lessons are actionable: (i) schema-constrained prompts and predicate whitelists reduce invalid SPARQL, (ii) category balancing reveals sparse-join behavior hidden by factoid-heavy datasets, and (iii) strategy-level logging separates semantic sparsity from parser/runtime failures. Figure~\ref{fig:strategy_coverage_main} shows main-article coverage; additional diagnostics are in Appendix Section~\ref{app:extended_analysis}.
+The remaining semantic-audit step is intentionally separated from automated validity. Parse and execution validity prove that queries are legal and answerable; they do not prove that the natural-language question perfectly matches the SPARQL intent. The audit packet and agreement tooling make this check reproducible, but the final pass rate and \(\kappa\) should be reported only after independent annotations are completed.
 
-\section{Industry Impact and Usage}
-\label{sec:industry_impact}
-PIPE-RDF addresses a practical barrier to enterprise adoption of NL--SPARQL systems: missing benchmarks that reflect proprietary schemas, vocabulary, and query distributions. Models that score well on public datasets often underperform on internal graphs because naming conventions, field availability, and constraints differ. PIPE-RDF lets teams validate user-realistic questions, quantify category-specific gaps, prioritize model changes, and flag high-risk query types (e.g., multi-hop, negation) before deployment. Artifacts support model evaluation (SP-F1, execution accuracy) and operations monitoring (parse-valid rates, repair counts, latency by category). Seed banks can be reused for few-shot prompting and as synthetic supervision for schema-specific fine-tuning.
+\section{Benchmark Usage}
+\label{sec:benchmark_usage}
+PIPE-RDF produces benchmark artifacts that can be used to evaluate NL-to-SPARQL systems on a target RDF schema. The generated pairs support execution accuracy, answer F1, SP-F1, and structural similarity evaluation. The same seed banks can also be reused as few-shot retrieval examples or synthetic supervision for schema-specific fine-tuning. The method is especially useful when public KGQA datasets do not match the target ontology, but the contribution does not depend on demonstrating adoption in any particular deployment context.
 
 \section{Conclusion}
 \label{sec:conclusion}
-PIPE-RDF provides a practical pipeline for generating balanced, schema-specific NL--SPARQL benchmarks. In our experiment, the pipeline yields a 450-pair dataset across nine categories with high parse and execution validity, alongside operational metrics suitable for real-world system tuning. By combining reverse querying, category-aware retrieval, and execution-based validation, PIPE-RDF supports both evaluation and training-data creation for enterprise NL--SPARQL systems.
+PIPE-RDF provides a practical pipeline for generating balanced, schema-specific NL--SPARQL benchmarks. Across two RDF schemas, the primary Qwen3.5-4B runs produce 3{,}600 strictly valid Phase-3 pairs with exact category balance, no parse failures, no execution failures, no empty answers, and no repairs. Cross-model probes with Qwen3.5-2B, 4B, and 9B show the same strict accepted-artifact profile at smaller scale, and the downstream utility evaluation shows that generated category-matched examples substantially improve NL-to-SPARQL prompting. By combining reverse querying, category-aware retrieval, binding banks, and execution-based validation, PIPE-RDF supports reproducible benchmark construction for RDF question answering.
 
 \section{Limitations}
 \label{sec:limitations}
-We evaluate PIPE-RDF on a single fixed schema slice (3 classes, 6 predicates) derived from public data rather than a proprietary enterprise graph. Although the pipeline is designed for private deployment, validation on larger schemas (20+ predicates) and multiple ontologies is needed to confirm generalizability.
+Both evaluated schemas are public. Schema C is a controlled public company-location slice and SPB-full is a public benchmark graph; we do not claim evidence from private or proprietary deployments. This is a deliberate change from an industry-track framing: the paper's claim is about schema-specific benchmark construction, not about the prevalence or adoption of RDF/SPARQL in any particular sector.
 
-The current evaluation focuses on generation-side metrics (parse validity, execution success, structural complexity); we do not include a downstream NL-to-SPARQL model evaluation in this work. The benchmark artifacts are designed to support such evaluation; teams can use the released NL--SPARQL pairs to compare prompt strategies (e.g., zero-shot vs. RAG) or fine-tuned models, measuring execution accuracy and SP-F1 on held-out splits. Future work should incorporate semantic equivalence metrics such as SP-F1 and structural similarity scores \citep{Rony_2022,ren2020codebleumethodautomaticevaluation}, and evaluate 2--3 NL-to-SPARQL models on the benchmark to demonstrate downstream utility.
+The semantic audit is prepared but requires independent human annotation before the paper should report pass rates and Cohen's \(\kappa\). Automated parse, execution, and answer-shape checks are necessary quality gates, but they are not substitutes for semantic alignment judgments.
 
-Strategy coverage is uneven in the current run: while JOIN/FILTER/COUNT/ORDER are well represented, explicit ASK and NEGATION operator forms are underrepresented in generated query text. Although equivalent semantics are often expressed through alternative SPARQL forms, future revisions should enforce stronger canonicalization checks to guarantee explicit operator coverage for these strategies.
+The downstream utility evaluation is prompt-based rather than a full comparison of fine-tuned semantic parsers. It shows that generated examples improve retrieval-augmented prompting, but future work should evaluate fine-tuning, grammar-constrained decoding, and additional RDF schemas with different ontology styles. The Qwen3.5-9B probe required a shorter 8K context on one GPU because the 16K configuration exceeded available memory; all probe prompts fit within that context, but larger-context deployments should report serving constraints explicitly.
 
 \section{Ethical Considerations}
 \label{sec:ethical}
-PIPE-RDF is intended for internal benchmarking and training-data creation over enterprise RDF graphs. Deployments should follow organizational data governance, minimize exposure of sensitive identifiers in prompts, and audit logs for leakage. The mini-slice in this study is derived from DBpedia, and usage follows its licensing terms.
+PIPE-RDF is intended for benchmark construction over RDF graphs. When used with private graphs, deployments should follow data governance policies, minimize exposure of sensitive identifiers in prompts, and audit logs for leakage. The public schemas in this study are derived from public RDF data, and usage follows their licensing terms.
 
 \bibliography{references}
 
@@ -331,16 +350,16 @@ This appendix reports detailed diagnostics that were omitted from the main paper
 \subsection{Reproducibility Checklist}
 \label{app:repro}
 \begin{itemize}
-  \item \textbf{Software/models}: GraphDB 10.6.3 (Docker), Ollama service, chat model \texttt{qwen3:4b-instruct}, embedding model \texttt{bge-m3}.
+  \item \textbf{Software/models}: GraphDB 10.6.3 (Docker), vLLM service, Qwen 3.5 chat models, embedding model \texttt{BAAI/bge-m3}.
   \item \textbf{Endpoint/repository}: repository \emph{spb\_company\_mini\_slice} with inference disabled (\texttt{infer=false}); see run log for full endpoint string.
   \item \textbf{Configuration}: main run uses the full-run YAML config; key sizes are listed in Table~\ref{tab:config}.
-  \item \textbf{Randomness control}: seed control is exposed via \texttt{SEED=42} in \texttt{pipekg/config.py}. Ollama generation remains stochastic; we therefore release full run artifacts for exact reuse of produced pairs.
-  \item \textbf{Command template}: \texttt{python scripts/run\_pipeline\_ollama.py} with \texttt{--run-name platinum\_run --config configs/full\_run.yaml}.
+  \item \textbf{Randomness control}: seed control is exposed via \texttt{SEED=42} in \texttt{pipekg/config.py}. LLM generation remains stochastic; we therefore release full run artifacts for exact reuse of produced pairs.
+  \item \textbf{Command template}: \texttt{python scripts/run\_pipeline\_ollama.py} with expanded-run configs under \texttt{configs/arr\_*.yaml}.
   \item \textbf{Artifacts}: \texttt{run.log}, \texttt{pipeline\_records.jsonl}, phase-wise JSONL/CSV, analysis summaries, and figures under \texttt{artifacts/runs/<run\_id>/}.
-  \item \textbf{Hardware/deployment}: single-machine localhost setup with GraphDB in Docker and local Ollama inference; per-query latencies are reported in the main paper.
+  \item \textbf{Hardware/deployment}: GraphDB in Docker plus vLLM model serving on GPU resources; per-query latencies are reported in the main paper.
 \end{itemize}
 
-\textbf{Category and strategy diagnostics.} Figure~\ref{fig:category_radar} highlights structural differences across categories. Strategy coverage is shown in the main paper (Figure~\ref{fig:strategy_coverage_main}), and Appendix Figure~\ref{fig:strategy_error_appendix} reports strategy-conditioned error rates. JOIN and FILTER dominated structures show higher empty rates, but parse and execution remain stable, supporting the conclusion that sparsity, not syntax failure, is the dominant source of difficulty.
+\textbf{Category and strategy diagnostics.} Figure~\ref{fig:category_radar} highlights structural differences across categories, and Appendix Figure~\ref{fig:strategy_error_appendix} reports strategy-conditioned error rates. These legacy diagnostics come from the earlier 450-pair baseline artifact; the expanded strict artifacts supersede their validity and empty-answer statistics, but the plots remain useful for illustrating the diagnostic reports produced by the pipeline.
 
 \begin{figure}[h]
   \centering
@@ -446,17 +465,15 @@ WHERE {
 
 \noindent\textbf{Comparative.} Q: Do (Company: Airbus) and (Company: FileMaker Inc.) have different numbers of employees?
 \begin{SPARQL}
-SELECT ?company1 ?n1 ?company2 ?n2
-WHERE {
+ASK {
   VALUES ?company1 { <http://dbpedia.org/resource/Airbus> }
   VALUES ?company2 { <http://dbpedia.org/resource/FileMaker_Inc.> }
   ?company1 a dbo:Company .
   ?company2 a dbo:Company .
   ?company1 dbo:numberOfEmployees ?n1 .
   ?company2 dbo:numberOfEmployees ?n2 .
-  FILTER (?n1 != ?n2)
+  FILTER (xsd:integer(?n1) != xsd:integer(?n2))
 }
-LIMIT 5
 \end{SPARQL}
 
 \noindent\textbf{Superlative.} Q: Which company has the most employees?
@@ -466,18 +483,19 @@ WHERE {
   ?company a dbo:Company .
   ?company dbo:numberOfEmployees ?employees .
 }
-ORDER BY DESC(?employees) ?company
+ORDER BY DESC(xsd:integer(?employees)) ?company
 LIMIT 1
 \end{SPARQL}
 
-\noindent\textbf{Ordinal.} Q: What is the founding year of (Company: Airbus)?
+\noindent\textbf{Ordinal.} Q: Which company was founded second earliest?
 \begin{SPARQL}
-SELECT ?year
+SELECT ?company ?year
 WHERE {
-  VALUES ?company { <http://dbpedia.org/resource/Airbus> }
   ?company a dbo:Company .
   ?company dbo:foundingYear ?year .
 }
+ORDER BY ASC(xsd:integer(?year)) ?company
+OFFSET 1
 LIMIT 1
 \end{SPARQL}
 
@@ -505,17 +523,17 @@ WHERE {
 LIMIT 5
 \end{SPARQL}
 
-\noindent\textbf{Difference.} Q: Which companies are located in (Location: California) but not in (Location: Texas)?
+\noindent\textbf{Difference.} Q: Are (Company: Airbus) and (Company: FileMaker Inc.) in different industries?
 \begin{SPARQL}
-SELECT DISTINCT ?company
-WHERE {
-  ?company a dbo:Company .
-  ?company dbo:location <http://dbpedia.org/resource/California> .
-  FILTER NOT EXISTS {
-    ?company dbo:location <http://dbpedia.org/resource/Texas> .
-  }
+ASK {
+  VALUES ?company1 { <http://dbpedia.org/resource/Airbus> }
+  VALUES ?company2 { <http://dbpedia.org/resource/FileMaker_Inc.> }
+  ?company1 a dbo:Company .
+  ?company2 a dbo:Company .
+  ?company1 dbo:industry ?industry1 .
+  ?company2 dbo:industry ?industry2 .
+  FILTER (?industry1 != ?industry2)
 }
-LIMIT 5
 \end{SPARQL}
 
 \noindent\textbf{Yes/No.} Q: Is (Company: Facebook) located in (Location: California)?
