@@ -9,42 +9,19 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from pipekg.settings import get_settings
-from pipekg.llm import LLMClient, LLMConfig
+from pipekg.runtime import build_llm
 from pipekg.vector_store import FaissStore
 
 
 def main() -> None:
     settings = get_settings()
-    if not settings.openai_api_key:
-        raise SystemExit("OPENAI_API_KEY is not set")
-
     input_path = Path("artifacts/data/benchmark_phase2.jsonl")
     if not input_path.exists():
         raise SystemExit("Expected Phase 2 seed file at artifacts/data/benchmark_phase2.jsonl")
 
     records = [json.loads(line) for line in input_path.read_text().splitlines() if line.strip()]
 
-    provider = settings.llm_provider
-    if provider == "ollama":
-        client = LLMClient(
-            LLMConfig(
-                provider="ollama",
-                api_key="",
-                model=settings.ollama_chat_model,
-                embed_model=settings.ollama_embed_model,
-                base_url=settings.ollama_base_url,
-            )
-        )
-    else:
-        client = LLMClient(
-            LLMConfig(
-                provider="openai",
-                api_key=settings.openai_api_key,
-                model=settings.openai_chat_model,
-                embed_model=settings.openai_embed_model,
-                base_url="",
-            )
-        )
+    client = build_llm(settings)
 
     # Build per-category FAISS index
     by_cat = {}

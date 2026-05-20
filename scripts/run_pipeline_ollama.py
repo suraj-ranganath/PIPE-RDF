@@ -4,6 +4,7 @@ import random
 import re
 import time
 import logging
+import urllib.parse
 from collections import defaultdict
 from pathlib import Path
 import sys
@@ -26,46 +27,27 @@ from pipekg.config import (
     CATEGORIES,
 )
 from pipekg.settings import get_settings
-from pipekg.llm import LLMClient, LLMConfig
+from pipekg.llm import LLMClient
+from pipekg.runtime import apply_run_config, build_llm
 from pipekg.sparql_client import SparqlClient
 import argparse
+import hashlib
 import subprocess
 from datetime import datetime
 from pipekg.pipeline_ollama import (
+    GenerationRecord,
     OllamaPipeline,
     build_faiss_index,
     retrieve_examples,
     append_record_jsonl,
 )
-from pipekg.evaluation import parse_valid_sparql_detail
+from pipekg.evaluation import parse_valid_sparql_detail, validate_answer_type
+from pipekg.ast_utils import ast_stats
 from pipekg.figures_extra import bar_by_category
 from pipekg.logging_utils import result_set_hash
 from pipekg.utils import tokenize, jaccard
 from pipekg.schema_summary import build_schema_summary, build_schema_whitelist
 from pipekg.logger import get_logger
-
-
-def build_llm(settings):
-    if settings.llm_provider == "ollama":
-        return LLMClient(
-            LLMConfig(
-                provider="ollama",
-                api_key="",
-                model=settings.ollama_chat_model,
-                embed_model=settings.ollama_embed_model,
-                base_url=settings.ollama_base_url,
-            )
-        )
-    return LLMClient(
-        LLMConfig(
-            provider="openai",
-            api_key=settings.openai_api_key,
-            model=settings.openai_chat_model,
-            embed_model=settings.openai_embed_model,
-            base_url="",
-        )
-    )
-
 
 def build_endpoint_url(base_url: str, infer: bool) -> str:
     if infer:
@@ -84,6 +66,25 @@ def load_run_config(path: str) -> dict:
     if not isinstance(data, dict):
         raise ValueError("Run config must be a YAML mapping")
     return data
+
+
+def load_profile_values(path: str, limit: int | None = None) -> list[str]:
+    values: list[str] = []
+    if not path:
+        return values
+    with Path(path).open("r", encoding="utf-8", newline="") as f:
+        sample = f.read(2048)
+        f.seek(0)
+        has_header = csv.Sniffer().has_header(sample) if sample else False
+        reader = csv.reader(f)
+        if has_header:
+            next(reader, None)
+        for row in reader:
+            if row and row[0].strip():
+                values.append(row[0].strip())
+            if limit and len(values) >= limit:
+                break
+    return values
 
 
 def add_example_to_store(llm: LLMClient, store, question: str, sparql: str, category: str):
@@ -250,6 +251,150 @@ def structural_dedupe_templates(templates):
     return unique
 
 
+def priority_templates_for_category(category: str) -> list[dict[str, object]]:
+    """Deterministic high-yield templates for categories needing many rows."""
+    if category == "generic":
+        return [
+            {"template": "Where is {company} located?", "slots": ["company"]},
+            {"template": "What industry is {company} in?", "slots": ["company"]},
+            {"template": "Who is a key person at {company}?", "slots": ["company"]},
+            {"template": "What is the founding year of {company}?", "slots": ["company"]},
+            {"template": "How many employees does {company} have?", "slots": ["company"]},
+        ]
+    if category == "counting":
+        return [
+            {"template": "How many companies are in {industry}?", "slots": ["industry"]},
+            {"template": "How many companies are located in {location}?", "slots": ["location"]},
+            {"template": "How many companies have key person {person}?", "slots": ["person"]},
+            {"template": "How many key people are associated with {company}?", "slots": ["company"]},
+            {"template": "How many companies were founded in {year}?", "slots": ["year"]},
+        ]
+    if category == "comparative":
+        return [
+            {"template": "Are {company1} and {company2} in the same industry?", "slots": ["company1", "company2"]},
+            {"template": "Are {company1} and {company2} located in the same location?", "slots": ["company1", "company2"]},
+            {"template": "Were {company1} and {company2} founded in the same year?", "slots": ["company1", "company2"]},
+            {"template": "Do {company1} and {company2} share a key person?", "slots": ["company1", "company2"]},
+            {"template": "Do {company1} and {company2} have the same employee count?", "slots": ["company1", "company2"]},
+        ]
+    if category == "difference":
+        return [
+            {"template": "Are {company1} and {company2} in different industries?", "slots": ["company1", "company2"]},
+            {"template": "Do {company1} and {company2} have different locations?", "slots": ["company1", "company2"]},
+            {"template": "Are {company1} and {company2} located in different locations?", "slots": ["company1", "company2"]},
+            {"template": "Do {company1} and {company2} operate in different industries?", "slots": ["company1", "company2"]},
+            {"template": "Were {company1} and {company2} founded in different years?", "slots": ["company1", "company2"]},
+        ]
+    if category == "multi-hop":
+        return [
+            {"template": "Which company is in {industry} and located in {location}?", "slots": ["industry", "location"]},
+            {"template": "Which company has key person {person} and is located in {location}?", "slots": ["person", "location"]},
+            {"template": "Which company in {industry} has key person {person}?", "slots": ["industry", "person"]},
+        ]
+    if category == "intersection":
+        return [
+            {"template": "Which company operates in {industry} and is located in {location}?", "slots": ["industry", "location"]},
+            {"template": "Which company in {industry} has key person {person}?", "slots": ["industry", "person"]},
+            {"template": "Which company located in {location} has key person {person}?", "slots": ["location", "person"]},
+        ]
+    if category == "superlative":
+        return [
+            {"template": "Which company in {industry} has the most employees?", "slots": ["industry"]},
+            {"template": "Which company in {industry} has the fewest employees?", "slots": ["industry"]},
+            {"template": "Which company in {industry} was founded earliest?", "slots": ["industry"]},
+            {"template": "Which company in {industry} was founded most recently?", "slots": ["industry"]},
+            {"template": "Which company in {location} has the most employees?", "slots": ["location"]},
+            {"template": "Which company in {location} has the fewest employees?", "slots": ["location"]},
+            {"template": "Which company in {location} was founded earliest?", "slots": ["location"]},
+            {"template": "Which company in {location} was founded most recently?", "slots": ["location"]},
+            {"template": "Which company in {industry} has the most key people?", "slots": ["industry"]},
+            {"template": "Which company in {location} has the most key people?", "slots": ["location"]},
+            {"template": "Which company has the most employees?", "slots": []},
+            {"template": "Which company has the fewest employees?", "slots": []},
+            {"template": "Which company was founded earliest?", "slots": []},
+            {"template": "Which company was founded most recently?", "slots": []},
+        ]
+    if category == "ordinal":
+        return [
+            {"template": "Which company has the {rank} most employees?", "slots": ["rank"]},
+            {"template": "Which company has the {rank} fewest employees?", "slots": ["rank"]},
+            {"template": "Which company was founded {rank} earliest?", "slots": ["rank"]},
+            {"template": "Which company was founded {rank} most recently?", "slots": ["rank"]},
+            {"template": "Which company in {industry} has the {rank} most employees?", "slots": ["industry", "rank"]},
+            {"template": "Which company in {industry} has the {rank} fewest employees?", "slots": ["industry", "rank"]},
+            {"template": "Which company in {industry} was founded {rank} earliest?", "slots": ["industry", "rank"]},
+            {"template": "Which company in {industry} was founded {rank} most recently?", "slots": ["industry", "rank"]},
+            {"template": "Which company in {location} has the {rank} most employees?", "slots": ["location", "rank"]},
+            {"template": "Which company in {location} has the {rank} fewest employees?", "slots": ["location", "rank"]},
+        ]
+    if category == "yesno":
+        return [
+            {"template": "Is {company} located in {location}?", "slots": ["company", "location"]},
+            {"template": "Is {company} based in {location}?", "slots": ["company", "location"]},
+            {"template": "Is {company} in the {industry} industry?", "slots": ["company", "industry"]},
+            {"template": "Does {company} operate in the {industry} industry?", "slots": ["company", "industry"]},
+            {"template": "Is {person} a key person at {company}?", "slots": ["person", "company"]},
+        ]
+    return []
+
+
+def merge_priority_templates(category: str, templates: list[dict[str, object]]) -> list[dict[str, object]]:
+    priority = priority_templates_for_category(category)
+    if not priority:
+        return filter_templates_for_category(category, templates)
+    merged = dedupe_templates(priority + list(templates))
+    if category == "superlative":
+        slot_templates = [item for item in merged if item.get("slots")]
+        slotless_templates = [item for item in merged if not item.get("slots")]
+        return filter_templates_for_category(category, slot_templates + slotless_templates)
+    return filter_templates_for_category(category, merged)
+
+
+def filter_templates_for_category(category: str, templates: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Drop category-mismatched templates before reverse querying.
+
+    LLMs occasionally return a fluent template for the wrong category (for
+    example, a generic founding-year lookup under the ordinal category). The
+    deterministic priority templates are sufficient for the ARR runs, and this
+    guard keeps fallback LLM templates from weakening construct coverage.
+    """
+    filtered: list[dict[str, object]] = []
+    for item in templates:
+        template = str(item.get("template", ""))
+        lower = template.lower()
+        slots = set(item.get("slots") or [])
+        keep = True
+        if category == "counting":
+            keep = ("count" in lower or "how many" in lower) and bool(slots)
+        elif category == "comparative":
+            keep = bool({"company1", "company2"} <= slots) and any(
+                marker in lower
+                for marker in ("same", "share", "both", "similar", "equal")
+            )
+        elif category == "difference":
+            keep = bool({"company1", "company2"} <= slots) and any(
+                marker in lower
+                for marker in ("different", "differ", "not the same")
+            )
+        elif category == "superlative":
+            keep = any(
+                marker in lower
+                for marker in ("most", "fewest", "least", "earliest", "latest", "recently", "highest", "lowest")
+            )
+        elif category == "ordinal":
+            keep = "rank" in slots and any(
+                marker in lower
+                for marker in ("{rank}", "second", "third", "fourth", "fifth")
+            )
+        elif category in {"multi-hop", "intersection"}:
+            keep = len(slots) >= 2 and any(marker in lower for marker in (" and ", " with ", " in "))
+        elif category == "yesno":
+            keep = lower.startswith(("is ", "are ", "does ", "do ", "was ", "were "))
+        if keep:
+            filtered.append(item)
+    return filtered
+
+
 class EntityDiversityTracker:
     """Tracks entity frequency per category to enforce diversity caps."""
 
@@ -313,20 +458,22 @@ def filter_retrieval_leakage(examples: list[dict], question: str, threshold: flo
     return filtered
 
 
-def randomize_reverse_query(sparql: str, limit: int) -> str:
-    # Strip inline LIMIT/ORDER BY to avoid ORDER BY after LIMIT (GraphDB parse error).
+def bounded_reverse_query(sparql: str, limit: int, offset: int = 0) -> str:
+    """Build a deterministic binding-bank query without ORDER BY RAND()."""
     text = sparql
-    text = re.sub(r"(?is)ORDER\\s+BY\\s+[^\\n]+", "", text)
-    text = re.sub(r"(?is)LIMIT\\s+\\d+\\b", "", text)
+    text = re.sub(r"(?im)^\s*ORDER\s+BY\b.*$", "", text)
+    text = re.sub(r"(?im)^\s*LIMIT\s+\d+\b.*$", "", text)
+    text = re.sub(r"(?im)^\s*OFFSET\s+\d+\b.*$", "", text)
     lines = [ln for ln in text.splitlines() if ln.strip()]
     cleaned = []
     for ln in lines:
         upper = ln.strip().upper()
-        if upper.startswith(("ORDER BY", "LIMIT")):
+        if upper.startswith(("ORDER BY", "LIMIT", "OFFSET")):
             continue
         cleaned.append(ln)
-    cleaned.append("ORDER BY RAND()")
     cleaned.append(f"LIMIT {limit}")
+    if offset > 0:
+        cleaned.append(f"OFFSET {offset}")
     return "\n".join(cleaned)
 
 
@@ -346,9 +493,11 @@ def select_vars_cover_slots(sparql: str, slots) -> bool:
     return True
 
 
-def is_simple_reverse_query(sparql: str) -> bool:
+def is_simple_reverse_query(sparql: str, category: str | None = None) -> bool:
     upper = sparql.upper()
-    banned = ["ORDER BY", "GROUP BY", "HAVING", "OPTIONAL", "UNION", "SUBSELECT", "COUNT(", "AVG(", "MIN(", "MAX(", "SUM("]
+    banned = ["ORDER BY", "OPTIONAL", "UNION", "SUBSELECT", "AVG(", "MIN(", "MAX(", "SUM("]
+    if category != "ordinal":
+        banned.extend(["GROUP BY", "HAVING", "COUNT("])
     return not any(tok in upper for tok in banned)
 
 
@@ -466,12 +615,7 @@ def main() -> None:
     run_start = time.time()
     settings = get_settings()
     cfg = load_run_config(args.config)
-    if cfg.get("models", {}).get("chat"):
-        settings.ollama_chat_model = cfg["models"]["chat"]
-    if cfg.get("models", {}).get("embed"):
-        settings.ollama_embed_model = cfg["models"]["embed"]
-    if cfg.get("sparql_endpoint_url"):
-        settings.sparql_endpoint_url = cfg["sparql_endpoint_url"]
+    apply_run_config(settings, cfg)
     if not settings.sparql_endpoint_url:
         raise SystemExit("SPARQL_ENDPOINT_URL is not set")
 
@@ -489,8 +633,19 @@ def main() -> None:
     logger.info("Starting PIPE-KG run")
     logger.info("Run ID: %s", run_id)
     logger.info("SPARQL endpoint: %s", settings.sparql_endpoint_url)
-    logger.info("Ollama base: %s", settings.ollama_base_url)
-    logger.info("Models: chat=%s embed=%s", settings.ollama_chat_model, settings.ollama_embed_model)
+    logger.info("LLM provider: %s", settings.llm_provider)
+    if settings.llm_provider == "ollama":
+        logger.info("Ollama base: %s", settings.ollama_base_url)
+        logger.info("Models: chat=%s embed=%s", settings.ollama_chat_model, settings.ollama_embed_model)
+    else:
+        logger.info("OpenAI-compatible base: %s", settings.openai_base_url)
+        logger.info("Models: chat=%s embed=%s", settings.openai_chat_model, settings.openai_embed_model)
+    logger.info(
+        "Embedding provider: %s local_model=%s device=%s",
+        settings.embed_provider or settings.llm_provider,
+        settings.local_embed_model,
+        settings.local_embed_device or "auto",
+    )
     if args.config:
         logger.info("Run config: %s", args.config)
     logger.info("Logs: %s", log_path)
@@ -516,6 +671,19 @@ def main() -> None:
     sparql_timeout_sec = cfg.get("sparql_timeout_sec", 60)
     sparql_infer = cfg.get("sparql_infer", False)
     generated_query_limit = cfg.get("generated_query_limit")
+    binding_bank_target_rows = int(cfg.get("binding_bank_target_rows", 1000))
+    binding_bank_query_limit = int(cfg.get("binding_bank_query_limit", min(500, max(100, binding_bank_target_rows))))
+    binding_bank_offset_stride = int(cfg.get("binding_bank_offset_stride", binding_bank_query_limit))
+    binding_bank_max_queries = int(
+        cfg.get(
+            "binding_bank_max_queries",
+            max(1, (binding_bank_target_rows + binding_bank_query_limit - 1) // binding_bank_query_limit),
+        )
+    )
+    binding_bank_extend_queries = int(cfg.get("binding_bank_extend_queries", 1))
+    binding_bank_batch_size = int(cfg.get("binding_bank_batch_size", 200))
+    binding_bank_dir = data_dir / "binding_banks"
+    binding_bank_dir.mkdir(parents=True, exist_ok=True)
 
     sparql_params = {}
     if not sparql_infer:
@@ -526,6 +694,15 @@ def main() -> None:
     if generated_query_limit:
         logger.info("Generated query LIMIT cap: %s", generated_query_limit)
     logger.info("Reverse query LIMIT cap: %s", reverse_query_limit)
+    logger.info(
+        "Binding banks: target_rows=%s query_limit=%s offset_stride=%s max_queries=%s extend_queries=%s batch_size=%s",
+        binding_bank_target_rows,
+        binding_bank_query_limit,
+        binding_bank_offset_stride,
+        binding_bank_max_queries,
+        binding_bank_extend_queries,
+        binding_bank_batch_size,
+    )
 
     llm = build_llm(settings)
     sparql = SparqlClient(settings.sparql_endpoint_url, timeout=sparql_timeout_sec, params=sparql_params)
@@ -586,12 +763,18 @@ PREFIX geo: <http://www.w3.org/2003/01/geo/wgs84_pos#>
         for prefix, base in prefix_map.items():
             schema_summary = schema_summary.replace(base, f"{prefix}:")
     logger.info("Schema summary built in %.1fs", time.time() - t_schema)
-    allowed_predicates_cfg = cfg.get("allowed_predicates") or []
-    allowed_types_cfg = cfg.get("allowed_types") or []
+    allowed_predicates_cfg = list(cfg.get("allowed_predicates") or [])
+    allowed_types_cfg = list(cfg.get("allowed_types") or [])
+    allowed_predicates_path = cfg.get("allowed_predicates_path", "").strip()
+    allowed_types_path = cfg.get("allowed_types_path", "").strip()
+    if allowed_predicates_path:
+        allowed_predicates_cfg.extend(load_profile_values(allowed_predicates_path, predicate_whitelist_topk))
+    if allowed_types_path:
+        allowed_types_cfg.extend(load_profile_values(allowed_types_path, predicate_whitelist_topk))
     whitelist = {"predicates": [], "types": []}
     if allowed_predicates_cfg or allowed_types_cfg:
         allowed_predicates = {expand_qname(p, prefix_map) for p in allowed_predicates_cfg}
-        allowed_types = [expand_qname(t, prefix_map) for t in allowed_types_cfg]
+        allowed_types = list(dict.fromkeys(expand_qname(t, prefix_map) for t in allowed_types_cfg))
         whitelist["predicates"] = sorted(allowed_predicates)
         whitelist["types"] = allowed_types
         logger.info("Using config-provided predicate/type whitelist")
@@ -673,27 +856,23 @@ PREFIX geo: <http://www.w3.org/2003/01/geo/wgs84_pos#>
         logger.debug("Filtered types count=%d", len(allowed_types))
 
     preferred_types = []
-    try:
-        res = schema_client.query(
-            """
+    preferred_types_cfg = cfg.get("preferred_types") or []
+    if preferred_types_cfg:
+        preferred_types = [
+            expand_qname(t, prefix_map)
+            for t in preferred_types_cfg
+            if not is_noisy_type(expand_qname(t, prefix_map))
+        ]
+    elif cfg.get("skip_preferred_types", False):
+        logger.info("Skipping live preferred-type query by config")
+    else:
+        try:
+            res = schema_client.query(
+                """
 SELECT ?type (COUNT(?s) AS ?c)
 WHERE { ?s a ?type }
 GROUP BY ?type
 ORDER BY DESC(?c)
-LIMIT 10
-"""
-        )
-        for row in res.rows:
-            t = row.get("type")
-            if t and not is_noisy_type(t):
-                preferred_types.append(t)
-    except Exception as exc:
-        logger.debug("Preferred types query failed: %s", exc)
-        try:
-            res = schema_client.query(
-                """
-SELECT DISTINCT ?type
-WHERE { ?s a ?type }
 LIMIT 10
 """
             )
@@ -701,8 +880,22 @@ LIMIT 10
                 t = row.get("type")
                 if t and not is_noisy_type(t):
                     preferred_types.append(t)
-        except Exception as exc2:
-            logger.debug("Preferred types DISTINCT query failed: %s", exc2)
+        except Exception as exc:
+            logger.debug("Preferred types query failed: %s", exc)
+            try:
+                res = schema_client.query(
+                    """
+SELECT DISTINCT ?type
+WHERE { ?s a ?type }
+LIMIT 10
+"""
+                )
+                for row in res.rows:
+                    t = row.get("type")
+                    if t and not is_noisy_type(t):
+                        preferred_types.append(t)
+            except Exception as exc2:
+                logger.debug("Preferred types DISTINCT query failed: %s", exc2)
     if allowed_predicates:
         allowed_pred_list = sorted(allowed_predicates)
         if primary_predicates:
@@ -874,6 +1067,909 @@ LIMIT 10
         )
         return False
 
+    def binding_bank_file(cat: str, template: str, reverse_sparql: str) -> Path:
+        slug = re.sub(r"[^A-Za-z0-9]+", "_", template).strip("_").lower()[:48] or "template"
+        digest = hashlib.sha1(f"{cat}\n{template}\n{reverse_sparql}".encode("utf-8")).hexdigest()[:12]
+        return binding_bank_dir / f"{cat}_{slug}_{digest}.jsonl"
+
+    def collect_binding_iris(rows: list[dict[str, str]], slots: list[str]) -> list[str]:
+        iris = []
+        for row in rows:
+            for slot in slots:
+                value = row.get(slot)
+                if isinstance(value, str) and is_iri(value):
+                    iris.append(value)
+        return list(dict.fromkeys(iris))
+
+    def write_binding_bank(path: Path, rows: list[dict[str, str]], metadata: dict[str, object]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        path.with_suffix(".meta.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    def render_priority_reverse_query(category: str, template: str, slots: list[str]) -> str | None:
+        lower = template.lower()
+        if category == "generic" and slots == ["company"]:
+            predicate = None
+            if "located" in lower:
+                predicate = "dbo:location ?location"
+            elif "industry" in lower:
+                predicate = "dbo:industry ?industry"
+            elif "key person" in lower:
+                predicate = "dbo:keyPerson ?person"
+            elif "founding year" in lower:
+                predicate = "dbo:foundingYear ?foundingYear"
+            elif "employees" in lower:
+                predicate = "dbo:numberOfEmployees ?numberOfEmployees"
+            if predicate:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    f"  ?company {predicate} .",
+                    "}",
+                    "LIMIT 25",
+                ])
+        if category == "counting":
+            if "companies are in {industry}" in lower and slots == ["industry"]:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?industry",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "companies are located in {location}" in lower and slots == ["location"]:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?location",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:location ?location .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "companies have key person {person}" in lower and slots == ["person"]:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?person",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "key people are associated with {company}" in lower and slots == ["company"]:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "companies were founded in {year}" in lower and slots == ["year"]:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?year",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:foundingYear ?year .",
+                    "}",
+                    "LIMIT 25",
+                ])
+
+        if category == "comparative" and slots == ["company1", "company2"]:
+            if "same industry" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company1 ?company2",
+                    "WHERE {",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:industry ?industry .",
+                    "  ?company2 dbo:industry ?industry .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "same location" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company1 ?company2",
+                    "WHERE {",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:location ?location .",
+                    "  ?company2 dbo:location ?location .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "same year" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company1 ?company2",
+                    "WHERE {",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:foundingYear ?year .",
+                    "  ?company2 dbo:foundingYear ?year .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "key person" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company1 ?company2",
+                    "WHERE {",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:keyPerson ?person .",
+                    "  ?company2 dbo:keyPerson ?person .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "employee count" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company1 ?company2",
+                    "WHERE {",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:numberOfEmployees ?count .",
+                    "  ?company2 dbo:numberOfEmployees ?count .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                    "LIMIT 25",
+                ])
+
+        if category == "difference" and slots == ["company1", "company2"]:
+            if "different industries" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company1 ?company2",
+                    "WHERE {",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:industry ?industry1 .",
+                    "  ?company2 dbo:industry ?industry2 .",
+                    "  FILTER(?company1 != ?company2 && ?industry1 != ?industry2)",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "different locations" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company1 ?company2",
+                    "WHERE {",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:location ?location1 .",
+                    "  ?company2 dbo:location ?location2 .",
+                    "  FILTER(?company1 != ?company2 && ?location1 != ?location2)",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if "different years" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company1 ?company2",
+                    "WHERE {",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:foundingYear ?year1 .",
+                    "  ?company2 dbo:foundingYear ?year2 .",
+                    "  FILTER(?company1 != ?company2 && ?year1 != ?year2)",
+                    "}",
+                    "LIMIT 25",
+                ])
+
+        if category in {"multi-hop", "intersection"}:
+            if set(slots) == {"industry", "location"}:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?industry ?location",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    "  ?company dbo:location ?location .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if set(slots) == {"industry", "person"}:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?industry ?person",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if set(slots) == {"person", "location"}:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?person ?location",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "  ?company dbo:location ?location .",
+                    "}",
+                    "LIMIT 25",
+                ])
+
+        if category == "superlative":
+            if slots == ["industry"] and "{industry}" in lower:
+                metric = "dbo:keyPerson ?person" if "key people" in lower else (
+                    "dbo:foundingYear ?foundingYear" if "founded" in lower else "dbo:numberOfEmployees ?numberOfEmployees"
+                )
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?industry",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    f"  ?company {metric} .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if slots == ["location"] and "{location}" in lower:
+                metric = "dbo:keyPerson ?person" if "key people" in lower else (
+                    "dbo:foundingYear ?foundingYear" if "founded" in lower else "dbo:numberOfEmployees ?numberOfEmployees"
+                )
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?location",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:location ?location .",
+                    f"  ?company {metric} .",
+                    "}",
+                    "LIMIT 25",
+                ])
+        if category == "ordinal":
+            rank_values = '"second" "third" "fourth" "fifth"'
+            if slots == ["rank"]:
+                metric = "dbo:foundingYear ?foundingYear" if "founded" in lower else "dbo:numberOfEmployees ?numberOfEmployees"
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?rank",
+                    "WHERE {",
+                    f"  VALUES ?rank {{ {rank_values} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    f"  ?company {metric} .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if set(slots) == {"industry", "rank"} and "{industry}" in lower:
+                metric = "dbo:foundingYear ?foundingYear" if "founded" in lower else "dbo:numberOfEmployees ?numberOfEmployees"
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?industry ?rank",
+                    "WHERE {",
+                    f"  VALUES ?rank {{ {rank_values} }}",
+                    "  {",
+                    "    SELECT ?industry",
+                    "    WHERE {",
+                    "      ?company rdf:type dbo:Company .",
+                    "      ?company dbo:industry ?industry .",
+                    f"      ?company {metric} .",
+                    "    }",
+                    "    GROUP BY ?industry",
+                    "    HAVING (COUNT(DISTINCT ?company) >= 5)",
+                    "  }",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if set(slots) == {"location", "rank"} and "{location}" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?location ?rank",
+                    "WHERE {",
+                    f"  VALUES ?rank {{ {rank_values} }}",
+                    "  {",
+                    "    SELECT ?location",
+                    "    WHERE {",
+                    "      ?company rdf:type dbo:Company .",
+                    "      ?company dbo:location ?location .",
+                    "      ?company dbo:numberOfEmployees ?numberOfEmployees .",
+                    "    }",
+                    "    GROUP BY ?location",
+                    "    HAVING (COUNT(DISTINCT ?company) >= 5)",
+                    "  }",
+                    "}",
+                    "LIMIT 25",
+                ])
+        if category == "yesno":
+            if set(slots) == {"company", "location"} and "located" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company ?location",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:location ?location .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if set(slots) == {"company", "industry"} and "industry" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company ?industry",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    "}",
+                    "LIMIT 25",
+                ])
+            if set(slots) == {"person", "company"} and "key person" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?person ?company",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "LIMIT 25",
+                ])
+        return None
+
+    def build_binding_cache(
+        reverse_sparql: str,
+        slots: list[str],
+        phase: str,
+        cat: str,
+        template: str,
+        extend: bool = False,
+    ) -> dict[str, object]:
+        cache = reverse_row_cache.get(reverse_sparql)
+        rows = list(cache.get("rows", [])) if cache else []
+        used = cache.get("used", set()) if cache else set()
+        offsets_done = set(cache.get("offsets_done", [])) if cache else set()
+        offset_stride = max(binding_bank_offset_stride, binding_bank_query_limit, 1)
+        start_offset = (
+            int(hashlib.sha1(reverse_sparql.encode("utf-8")).hexdigest()[:8], 16)
+            % offset_stride
+        )
+        next_offset = int(cache.get("next_offset", start_offset + offset_stride)) if cache else start_offset + offset_stride
+        exhausted = bool(cache.get("exhausted", False)) if cache else False
+        bank_path = Path(cache.get("bank_path")) if cache and cache.get("bank_path") else binding_bank_file(cat, template, reverse_sparql)
+
+        if cache and not extend:
+            return cache
+        if exhausted and extend and 0 in offsets_done:
+            return cache or {"rows": rows, "used": used, "offsets_done": offsets_done, "next_offset": next_offset, "exhausted": True, "bank_path": str(bank_path)}
+
+        max_queries = binding_bank_extend_queries if extend else binding_bank_max_queries
+        target_rows = len(rows) + binding_bank_query_limit if extend else binding_bank_target_rows
+        queries_run = 0
+        seen_keys = {row_key(row, slots) for row in rows}
+
+        def pick_binding_offset() -> int:
+            nonlocal next_offset
+            if 0 not in offsets_done:
+                return 0
+            if start_offset not in offsets_done:
+                return start_offset
+            while next_offset in offsets_done:
+                next_offset += offset_stride
+            chosen = next_offset
+            next_offset += offset_stride
+            return chosen
+
+        while len(rows) < target_rows and queries_run < max_queries and not exhausted:
+            current_offset = pick_binding_offset()
+            query = bounded_reverse_query(reverse_sparql, binding_bank_query_limit, current_offset)
+            offsets_done.add(current_offset)
+            queries_run += 1
+            ok, _, fetched_rows, err = pipeline.execute_rows(query)
+            if not ok:
+                logger.warning(
+                    "Binding-bank query failed (%s:%s): %s | template=%s",
+                    phase,
+                    cat,
+                    err,
+                    template,
+                )
+                break
+            added = 0
+            for row in fetched_rows:
+                key = row_key(row, slots)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                rows.append(row)
+                added += 1
+            logger.debug(
+                "Binding-bank query (%s:%s) offset=%d fetched=%d added=%d total=%d template=%s",
+                phase,
+                cat,
+                current_offset,
+                len(fetched_rows),
+                added,
+                len(rows),
+                template,
+            )
+            if current_offset == 0 and len(fetched_rows) < binding_bank_query_limit:
+                exhausted = True
+
+        if rows:
+            random.shuffle(rows)
+            pipeline.prime_entity_metadata(collect_binding_iris(rows, slots), batch_size=binding_bank_batch_size)
+
+        metadata = {
+            "category": cat,
+            "template": template,
+            "slots": slots,
+            "reverse_sparql": reverse_sparql,
+            "rows": len(rows),
+            "offsets_done": sorted(offsets_done),
+            "next_offset": next_offset,
+            "exhausted": exhausted,
+        }
+        write_binding_bank(bank_path, rows, metadata)
+        cache = {
+            "rows": rows,
+            "used": used,
+            "offsets_done": offsets_done,
+            "next_offset": next_offset,
+            "exhausted": exhausted,
+            "bank_path": str(bank_path),
+        }
+        reverse_row_cache[reverse_sparql] = cache
+        log_row_sample(rows, phase, cat, logger=logger)
+        logger.info(
+            "Binding bank ready (%s:%s): rows=%d path=%s",
+            phase,
+            cat,
+            len(rows),
+            bank_path,
+        )
+        return cache
+
+    def sparql_iri(value: str) -> str:
+        value = urllib.parse.unquote(str(value))
+        return value if value.startswith("<") else f"<{value}>"
+
+    def sparql_string(value: str) -> str:
+        return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+    def rank_offset(value: str | None) -> int | None:
+        if value is None:
+            return None
+        text = str(value).strip().strip('"').lower()
+        mapping = {
+            "first": 0,
+            "1": 0,
+            "second": 1,
+            "2": 1,
+            "third": 2,
+            "3": 2,
+            "fourth": 3,
+            "4": 3,
+            "fifth": 4,
+            "5": 4,
+        }
+        return mapping.get(text)
+
+    def scoped_company_patterns(slot: str | None, value: str | None) -> list[str]:
+        lines = ["  ?company rdf:type dbo:Company ."]
+        if slot == "industry" and value:
+            lines.insert(0, f"  VALUES ?industry {{ {sparql_iri(value)} }}")
+            lines.append("  ?company dbo:industry ?industry .")
+        elif slot == "location" and value:
+            lines.insert(0, f"  VALUES ?location {{ {sparql_iri(value)} }}")
+            lines.append("  ?company dbo:location ?location .")
+        return lines
+
+    def render_priority_sparql(category: str, template: str, row: dict[str, str] | None) -> str | None:
+        lower = template.lower()
+        row = row or {}
+        lines: list[str]
+
+        if category == "generic" and row.get("company"):
+            if "located" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?location",
+                    "WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:location ?location .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            if "industry" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?industry",
+                    "WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            if "key person" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?person",
+                    "WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            if "founding year" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?foundingYear",
+                    "WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:foundingYear ?foundingYear .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            if "employees" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?numberOfEmployees",
+                    "WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:numberOfEmployees ?numberOfEmployees .",
+                    "}",
+                    "LIMIT 5",
+                ])
+
+        if category == "counting":
+            if "companies are in {industry}" in lower and row.get("industry"):
+                lines = scoped_company_patterns("industry", row["industry"])
+                return prefixes + "\n" + "\n".join([
+                    "SELECT (COUNT(DISTINCT ?company) AS ?count)",
+                    "WHERE {",
+                    *lines,
+                    "}",
+                    "LIMIT 5",
+                ])
+            if "companies are located in {location}" in lower and row.get("location"):
+                lines = scoped_company_patterns("location", row["location"])
+                return prefixes + "\n" + "\n".join([
+                    "SELECT (COUNT(DISTINCT ?company) AS ?count)",
+                    "WHERE {",
+                    *lines,
+                    "}",
+                    "LIMIT 5",
+                ])
+            if "companies have key person {person}" in lower and row.get("person"):
+                return prefixes + "\n" + "\n".join([
+                    "SELECT (COUNT(DISTINCT ?company) AS ?count)",
+                    "WHERE {",
+                    f"  VALUES ?person {{ {sparql_iri(row['person'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            if "key people are associated with {company}" in lower and row.get("company"):
+                return prefixes + "\n" + "\n".join([
+                    "SELECT (COUNT(DISTINCT ?person) AS ?count)",
+                    "WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            if "companies were founded in {year}" in lower and row.get("year"):
+                return prefixes + "\n" + "\n".join([
+                    "SELECT (COUNT(DISTINCT ?company) AS ?count)",
+                    "WHERE {",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:foundingYear ?year .",
+                    f"  FILTER(STR(?year) = {sparql_string(row['year'])})",
+                    "}",
+                    "LIMIT 5",
+                ])
+            return None
+
+        if category == "comparative" and row.get("company1") and row.get("company2"):
+            if "same industry" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company1 {{ {sparql_iri(row['company1'])} }}",
+                    f"  VALUES ?company2 {{ {sparql_iri(row['company2'])} }}",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:industry ?industry .",
+                    "  ?company2 dbo:industry ?industry .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                ])
+            if "same location" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company1 {{ {sparql_iri(row['company1'])} }}",
+                    f"  VALUES ?company2 {{ {sparql_iri(row['company2'])} }}",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:location ?location .",
+                    "  ?company2 dbo:location ?location .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                ])
+            if "same founding year" in lower or "founded in the same year" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company1 {{ {sparql_iri(row['company1'])} }}",
+                    f"  VALUES ?company2 {{ {sparql_iri(row['company2'])} }}",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:foundingYear ?year .",
+                    "  ?company2 dbo:foundingYear ?year .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                ])
+            if "same key person" in lower or "share a key person" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company1 {{ {sparql_iri(row['company1'])} }}",
+                    f"  VALUES ?company2 {{ {sparql_iri(row['company2'])} }}",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:keyPerson ?person .",
+                    "  ?company2 dbo:keyPerson ?person .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                ])
+            if "same employee count" in lower or "same number of employees" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company1 {{ {sparql_iri(row['company1'])} }}",
+                    f"  VALUES ?company2 {{ {sparql_iri(row['company2'])} }}",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:numberOfEmployees ?count .",
+                    "  ?company2 dbo:numberOfEmployees ?count .",
+                    "  FILTER(?company1 != ?company2)",
+                    "}",
+                ])
+            return None
+
+        if category == "difference" and row.get("company1") and row.get("company2"):
+            if "different industries" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company1 {{ {sparql_iri(row['company1'])} }}",
+                    f"  VALUES ?company2 {{ {sparql_iri(row['company2'])} }}",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:industry ?industry1 .",
+                    "  ?company2 dbo:industry ?industry2 .",
+                    "  FILTER(?company1 != ?company2 && ?industry1 != ?industry2)",
+                    "}",
+                ])
+            if "different locations" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company1 {{ {sparql_iri(row['company1'])} }}",
+                    f"  VALUES ?company2 {{ {sparql_iri(row['company2'])} }}",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:location ?location1 .",
+                    "  ?company2 dbo:location ?location2 .",
+                    "  FILTER(?company1 != ?company2 && ?location1 != ?location2)",
+                    "}",
+                ])
+            if "different founding years" in lower or "founded in different years" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company1 {{ {sparql_iri(row['company1'])} }}",
+                    f"  VALUES ?company2 {{ {sparql_iri(row['company2'])} }}",
+                    "  ?company1 rdf:type dbo:Company .",
+                    "  ?company2 rdf:type dbo:Company .",
+                    "  ?company1 dbo:foundingYear ?year1 .",
+                    "  ?company2 dbo:foundingYear ?year2 .",
+                    "  FILTER(?company1 != ?company2 && ?year1 != ?year2)",
+                    "}",
+                ])
+            return None
+
+        if category in {"multi-hop", "intersection"}:
+            if row.get("industry") and row.get("location"):
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company",
+                    "WHERE {",
+                    f"  VALUES ?industry {{ {sparql_iri(row['industry'])} }}",
+                    f"  VALUES ?location {{ {sparql_iri(row['location'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    "  ?company dbo:location ?location .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            if row.get("industry") and row.get("person"):
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company",
+                    "WHERE {",
+                    f"  VALUES ?industry {{ {sparql_iri(row['industry'])} }}",
+                    f"  VALUES ?person {{ {sparql_iri(row['person'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            if row.get("person") and row.get("location"):
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company",
+                    "WHERE {",
+                    f"  VALUES ?person {{ {sparql_iri(row['person'])} }}",
+                    f"  VALUES ?location {{ {sparql_iri(row['location'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "  ?company dbo:location ?location .",
+                    "}",
+                    "LIMIT 5",
+                ])
+            return None
+
+        if category == "superlative":
+            scope_slot = None
+            scope_value = None
+            if "{industry}" in lower and row.get("industry"):
+                scope_slot = "industry"
+                scope_value = row["industry"]
+            elif "{location}" in lower and row.get("location"):
+                scope_slot = "location"
+                scope_value = row["location"]
+
+            company_lines = scoped_company_patterns(scope_slot, scope_value)
+            if "employee" in lower:
+                order = "ASC" if any(word in lower for word in ("fewest", "least", "lowest")) else "DESC"
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company ?numberOfEmployees",
+                    "WHERE {",
+                    *company_lines,
+                    "  ?company dbo:numberOfEmployees ?numberOfEmployees .",
+                    "}",
+                    f"ORDER BY {order}(?numberOfEmployees) ?company",
+                    "LIMIT 1",
+                ])
+            if "founded" in lower:
+                order = "ASC" if "earliest" in lower else "DESC"
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company ?foundingYear",
+                    "WHERE {",
+                    *company_lines,
+                    "  ?company dbo:foundingYear ?foundingYear .",
+                    "}",
+                    f"ORDER BY {order}(?foundingYear) ?company",
+                    "LIMIT 1",
+                ])
+            if "key people" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "SELECT ?company (COUNT(DISTINCT ?person) AS ?count)",
+                    "WHERE {",
+                    *company_lines,
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                    "GROUP BY ?company",
+                    "ORDER BY DESC(?count) ?company",
+                    "LIMIT 1",
+                ])
+
+        if category == "ordinal" and row.get("rank"):
+            offset = rank_offset(row.get("rank"))
+            if offset is None:
+                return None
+            scope_slot = None
+            scope_value = None
+            if "{industry}" in lower and row.get("industry"):
+                scope_slot = "industry"
+                scope_value = row["industry"]
+            elif "{location}" in lower and row.get("location"):
+                scope_slot = "location"
+                scope_value = row["location"]
+            company_lines = scoped_company_patterns(scope_slot, scope_value)
+            if "employee" in lower:
+                order = "ASC" if any(word in lower for word in ("fewest", "least", "lowest")) else "DESC"
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company ?numberOfEmployees",
+                    "WHERE {",
+                    *company_lines,
+                    "  ?company dbo:numberOfEmployees ?numberOfEmployees .",
+                    "}",
+                    f"ORDER BY {order}(?numberOfEmployees) ?company",
+                    f"LIMIT 1 OFFSET {offset}",
+                ])
+            if "founded" in lower:
+                order = "DESC" if "most recently" in lower else "ASC"
+                return prefixes + "\n" + "\n".join([
+                    "SELECT DISTINCT ?company ?foundingYear",
+                    "WHERE {",
+                    *company_lines,
+                    "  ?company dbo:foundingYear ?foundingYear .",
+                    "}",
+                    f"ORDER BY {order}(?foundingYear) ?company",
+                    f"LIMIT 1 OFFSET {offset}",
+                ])
+
+        if category == "yesno":
+            if row.get("company") and row.get("location") and ("located" in lower or "based" in lower):
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    f"  VALUES ?location {{ {sparql_iri(row['location'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:location ?location .",
+                    "}",
+                ])
+            if row.get("company") and row.get("industry") and "industry" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    f"  VALUES ?industry {{ {sparql_iri(row['industry'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:industry ?industry .",
+                    "}",
+                ])
+            if row.get("company") and row.get("person") and "key person" in lower:
+                return prefixes + "\n" + "\n".join([
+                    "ASK WHERE {",
+                    f"  VALUES ?company {{ {sparql_iri(row['company'])} }}",
+                    f"  VALUES ?person {{ {sparql_iri(row['person'])} }}",
+                    "  ?company rdf:type dbo:Company .",
+                    "  ?company dbo:keyPerson ?person .",
+                    "}",
+                ])
+        return None
+
+    def run_known_sparql(
+        question: str,
+        category: str,
+        template: str | None,
+        row: dict[str, str] | None,
+        examples: list[dict[str, str]] | None,
+    ) -> GenerationRecord | None:
+        if not template:
+            return None
+        sparql_text = render_priority_sparql(category, template, row)
+        if not sparql_text:
+            return None
+        parse_ok, parse_err = parse_valid_sparql_detail(sparql_text)
+        ast_nodes = 0
+        ast_depth = 0
+        if parse_ok:
+            try:
+                ast_nodes, ast_depth, _ = ast_stats(sparql_text)
+            except Exception:
+                ast_nodes, ast_depth = 0, 0
+        exec_ok, exec_ms, answers, error = pipeline.execute(sparql_text) if parse_ok else (False, 0.0, [], None)
+        error_type = None
+        if not parse_ok:
+            error = f"parse_error: {parse_err}"
+            error_type = "parse_error"
+        elif not exec_ok:
+            error_type = "endpoint_error"
+        elif not answers:
+            error_type = "empty_result"
+        elif category == "counting" and answers[0] in {"0", "0.0"}:
+            error = "grounded_count_returned_zero"
+            error_type = "semantic_empty_count"
+            exec_ok = False
+        elif not validate_answer_type(category, answers, sparql_text):
+            error = "answer_type_mismatch"
+            error_type = "answer_type_mismatch"
+        if error_type:
+            logger.debug(
+                "Known-template SPARQL rejected | category=%s question=%s error_type=%s",
+                category,
+                question,
+                error_type,
+            )
+        return GenerationRecord(
+            category=category,
+            question=question,
+            sparql=sparql_text,
+            answers=answers,
+            exec_success=exec_ok,
+            parse_valid=parse_ok,
+            error=error,
+            error_type=error_type,
+            repair_attempts=0,
+            llm_latency_ms=0.0,
+            question_latency_ms=0.0,
+            sparql_exec_ms=exec_ms,
+            answer_count=len(answers),
+            result_hash=result_set_hash(answers) if answers else None,
+            prompt_chars=0,
+            prompt_tokens_est=0,
+            retrieved_examples=examples or [],
+            ast_node_count=ast_nodes,
+            ast_max_depth=ast_depth,
+        )
+
     # Phase 1: template generation + reverse querying (seeds for retrieval)
     logger.info("Phase 1: template generation + reverse querying")
     phase1_records = []
@@ -890,7 +1986,7 @@ LIMIT 10
         except ValueError as exc:
             logger.warning("Phase 1 template generation skipped for category=%s: %s", cat, exc)
             continue
-        templates = dedupe_templates(templates)
+        templates = merge_priority_templates(cat, dedupe_templates(templates))
         if not templates:
             logger.warning("No templates generated in Phase 1 for category=%s", cat)
             continue
@@ -907,11 +2003,13 @@ LIMIT 10
                 cache_key = (template, tuple(slots))
                 reverse_sparql = template_reverse_cache.get(cache_key)
                 if reverse_sparql is None:
-                    try:
-                        reverse_sparql = pipeline.reverse_query(template, slots)
-                    except Exception as exc:
-                        logger.warning("Reverse query failed in Phase 1 for category=%s: %s", cat, exc)
-                        continue
+                    reverse_sparql = render_priority_reverse_query(cat, template, slots)
+                    if reverse_sparql is None:
+                        try:
+                            reverse_sparql = pipeline.reverse_query(template, slots)
+                        except Exception as exc:
+                            logger.warning("Reverse query failed in Phase 1 for category=%s: %s", cat, exc)
+                            continue
                     template_reverse_cache[cache_key] = reverse_sparql
                 ok_parse, parse_err = parse_valid_sparql_detail(reverse_sparql)
                 if not ok_parse:
@@ -921,7 +2019,7 @@ LIMIT 10
                         parse_err,
                         reverse_sparql,
                     )
-                if not is_simple_reverse_query(reverse_sparql):
+                if not is_simple_reverse_query(reverse_sparql, cat):
                     logger.warning("Reverse query not simple (phase1:%s): sparql=%s", cat, reverse_sparql)
                     continue
                 preds = extract_predicates(reverse_sparql, prefix_map)
@@ -936,21 +2034,7 @@ LIMIT 10
                 if not body_contains_slots(reverse_sparql, slots):
                     logger.warning("Reverse query missing slot vars in body (phase1:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
                     continue
-                cache = reverse_row_cache.get(reverse_sparql)
-                if cache is None:
-                    ok, _, rows, err = pipeline.execute_rows(reverse_sparql)
-                    if not ok:
-                        logger.warning("Reverse query exec failed (phase1:%s): %s | sparql=%s", cat, err, reverse_sparql)
-                        reverse_row_cache[reverse_sparql] = {"rows": [], "used": set()}
-                        continue
-                    if not rows:
-                        logger.debug("Reverse query returned 0 rows (phase1:%s): sparql=%s", cat, reverse_sparql)
-                        reverse_row_cache[reverse_sparql] = {"rows": [], "used": set()}
-                        continue
-                    random.shuffle(rows)
-                    cache = {"rows": rows, "used": set()}
-                    reverse_row_cache[reverse_sparql] = cache
-                    log_row_sample(rows, "phase1", cat, logger=logger)
+                cache = build_binding_cache(reverse_sparql, slots, "phase1", cat, template)
                 rows = cache["rows"]
                 if not rows:
                     logger.debug("Reverse query cache empty (phase1:%s): sparql=%s", cat, reverse_sparql)
@@ -973,7 +2057,7 @@ LIMIT 10
                         if not val:
                             continue
                         label = pipeline.label_for_uri(val)
-                        type_uri = pipeline.entity_type_for_uri(val)
+                        type_uri = slot_type_hints.get(re.sub(r"\d+$", "", slot)) or pipeline.entity_type_for_uri(val)
                         type_label = pipeline.label_for_type(type_uri) if type_uri else None
                         if type_label:
                             filled = filled.replace("{" + slot + "}", f"({type_label}: {label})")
@@ -982,7 +2066,12 @@ LIMIT 10
                             filled = filled.replace("{" + slot + "}", label)
                             entity_hints[slot] = val
                     logger.debug("Filled question (phase1:%s cat=%d/%d): %s", cat, cat_idx, len(categories), filled)
-                    rec = pipeline.run_single(filled, cat, entity_hints=entity_hints, repair_attempts=repair_attempts)
+                    rec = run_known_sparql(filled, cat, template, row, examples=None)
+                    if rec is None:
+                        rec = pipeline.run_single(filled, cat, entity_hints=entity_hints, repair_attempts=repair_attempts)
+                    if (not rec.exec_success) or rec.error_type:
+                        append_record_jsonl(str(log_path), rec)
+                        continue
                     phase1_records.append(rec)
                     overall_done += 1
                     accepted += 1
@@ -992,7 +2081,12 @@ LIMIT 10
             else:
                 for _ in range(min(phase1_seeds_per_template, 1)):
                     logger.debug("Filled question (phase1:%s cat=%d/%d): %s", cat, cat_idx, len(categories), template)
-                    rec = pipeline.run_single(template, cat, repair_attempts=repair_attempts)
+                    rec = run_known_sparql(template, cat, template, row=None, examples=None)
+                    if rec is None:
+                        rec = pipeline.run_single(template, cat, repair_attempts=repair_attempts)
+                    if (not rec.exec_success) or rec.error_type:
+                        append_record_jsonl(str(log_path), rec)
+                        continue
                     phase1_records.append(rec)
                     overall_done += 1
                     accepted += 1
@@ -1045,7 +2139,7 @@ LIMIT 10
             except ValueError as exc:
                 logger.warning("Phase 2 template generation failed for category=%s: %s", cat, exc)
                 continue
-            templates = dedupe_templates(templates)
+            templates = merge_priority_templates(cat, dedupe_templates(templates))
             if not templates:
                 logger.warning("No templates generated in Phase 2 for category=%s", cat)
                 continue
@@ -1054,6 +2148,7 @@ LIMIT 10
             entity_hints = {}
             selected_template = None
             selected_slots = None
+            selected_row = None
             for tmpl in templates:
                 template = tmpl.get("template", "")
                 slots = tmpl.get("slots", [])
@@ -1066,11 +2161,13 @@ LIMIT 10
                     cache_key = (template, tuple(slots))
                     reverse_sparql = template_reverse_cache.get(cache_key)
                     if reverse_sparql is None:
-                        try:
-                            reverse_sparql = pipeline.reverse_query(template, slots)
-                        except Exception as exc:
-                            logger.warning("Reverse query failed in Phase 2 for category=%s: %s", cat, exc)
-                            continue
+                        reverse_sparql = render_priority_reverse_query(cat, template, slots)
+                        if reverse_sparql is None:
+                            try:
+                                reverse_sparql = pipeline.reverse_query(template, slots)
+                            except Exception as exc:
+                                logger.warning("Reverse query failed in Phase 2 for category=%s: %s", cat, exc)
+                                continue
                         template_reverse_cache[cache_key] = reverse_sparql
                     ok_parse, parse_err = parse_valid_sparql_detail(reverse_sparql)
                     if not ok_parse:
@@ -1080,7 +2177,7 @@ LIMIT 10
                             parse_err,
                             reverse_sparql,
                         )
-                    if not is_simple_reverse_query(reverse_sparql):
+                    if not is_simple_reverse_query(reverse_sparql, cat):
                         logger.warning("Reverse query not simple (phase2:%s): sparql=%s", cat, reverse_sparql)
                         continue
                     preds = extract_predicates(reverse_sparql, prefix_map)
@@ -1095,21 +2192,7 @@ LIMIT 10
                     if not body_contains_slots(reverse_sparql, slots):
                         logger.warning("Reverse query missing slot vars in body (phase2:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
                         continue
-                    cache = reverse_row_cache.get(reverse_sparql)
-                    if cache is None:
-                        ok, _, rows, err = pipeline.execute_rows(reverse_sparql)
-                        if not ok:
-                            logger.warning("Reverse query exec failed (phase2:%s): %s | sparql=%s", cat, err, reverse_sparql)
-                            reverse_row_cache[reverse_sparql] = {"rows": [], "used": set()}
-                            continue
-                        if not rows:
-                            logger.debug("Reverse query returned 0 rows (phase2:%s): sparql=%s", cat, reverse_sparql)
-                            reverse_row_cache[reverse_sparql] = {"rows": [], "used": set()}
-                            continue
-                        random.shuffle(rows)
-                        cache = {"rows": rows, "used": set()}
-                        reverse_row_cache[reverse_sparql] = cache
-                        log_row_sample(rows, "phase2", cat, logger=logger)
+                    cache = build_binding_cache(reverse_sparql, slots, "phase2", cat, template)
                     rows = cache["rows"]
                     if not rows:
                         logger.debug("Reverse query cache empty (phase2:%s): sparql=%s", cat, reverse_sparql)
@@ -1127,26 +2210,19 @@ LIMIT 10
                     )
                     if not row:
                         if template not in refreshed_templates:
-                            rand_sparql = randomize_reverse_query(
-                                reverse_sparql,
-                                reverse_query_limit,
+                            cache = build_binding_cache(reverse_sparql, slots, "phase2", cat, template, extend=True)
+                            refreshed_templates.add(template)
+                            row = select_valid_row(
+                                cache["rows"],
+                                slots,
+                                pipeline,
+                                max_row_checks,
+                                logger=logger,
+                                used_keys=cache["used"],
+                                entity_diversity=entity_diversity,
+                                category=cat,
+                                target_per_cat=phase2_seeds_per_category,
                             )
-                            ok, _, rrows, _ = pipeline.execute_rows(rand_sparql)
-                            if ok and rrows:
-                                cache["rows"] = rrows
-                                cache["used"] = set()
-                                refreshed_templates.add(template)
-                                row = select_valid_row(
-                                    rrows,
-                                    slots,
-                                    pipeline,
-                                    max_row_checks,
-                                    logger=logger,
-                                    used_keys=cache["used"],
-                                    entity_diversity=entity_diversity,
-                                    category=cat,
-                                    target_per_cat=phase2_seeds_per_category,
-                                )
                         if not row:
                             key = template
                             stall_counts[key] = stall_counts.get(key, 0) + 1
@@ -1167,7 +2243,7 @@ LIMIT 10
                             continue
                         if is_iri(val):
                             label = pipeline.label_for_uri(val)
-                            type_uri = pipeline.entity_type_for_uri(val)
+                            type_uri = slot_type_hints.get(re.sub(r"\d+$", "", slot)) or pipeline.entity_type_for_uri(val)
                             type_label = pipeline.label_for_type(type_uri) if type_uri else None
                             if type_label:
                                 filled = filled.replace("{" + slot + "}", f"({type_label}: {label})")
@@ -1183,6 +2259,7 @@ LIMIT 10
                 if filled:
                     selected_template = template
                     selected_slots = slots
+                    selected_row = row if slots else None
                     break
             if not filled:
                 continue
@@ -1195,17 +2272,19 @@ LIMIT 10
             seen_filled[phase_key].add(filled)
             examples = retrieve_examples(llm, global_store, filled, k=retrieval_top_k) if global_store else []
             examples = filter_retrieval_leakage(examples, filled)
-            rec = pipeline.run_single(
-                filled,
-                cat,
-                examples=examples,
-                entity_hints=entity_hints,
-                repair_attempts=repair_attempts,
-            )
+            rec = run_known_sparql(filled, cat, selected_template, selected_row, examples)
+            if rec is None:
+                rec = pipeline.run_single(
+                    filled,
+                    cat,
+                    examples=examples,
+                    entity_hints=entity_hints,
+                    repair_attempts=repair_attempts,
+                )
             rec.question_latency_ms = q_latency
             append_record_jsonl(str(log_path), rec)
 
-            status = "OK" if rec.exec_success else "FAIL"
+            status = "OK" if rec.exec_success and not rec.error_type else "FAIL"
             logger.info(
                 "[phase2:%s] %d/%d %s | parse=%s exec_ms=%.1f llm_ms=%.1f q_ms=%.1f answers=%d error=%s overall=%.1f%% cat=%d/%d",
                 cat,
@@ -1223,7 +2302,7 @@ LIMIT 10
                 len(categories),
             )
 
-            if not rec.exec_success:
+            if (not rec.exec_success) or rec.error_type:
                 continue
             if is_duplicate(llm, category_stores[cat], rec.question, dup_sim_threshold):
                 logger.debug("Duplicate detected in phase2 for category=%s", cat)
@@ -1261,6 +2340,7 @@ LIMIT 10
     logger.info("Phase 3: full dataset generation")
     for cache in reverse_row_cache.values():
         cache["used"] = set()
+    entity_diversity = EntityDiversityTracker(max_entity_pct=cfg.get("max_entity_pct", 0.15))
     phase3_records = []
     phase3_dedupe_stores = {cat: None for cat in categories}
     for cat_idx, cat in enumerate(categories, start=1):
@@ -1289,7 +2369,7 @@ LIMIT 10
                 except ValueError as exc:
                     logger.warning("Phase 3 template generation failed for category=%s: %s", cat, exc)
                     continue
-            templates = dedupe_templates(templates)
+            templates = merge_priority_templates(cat, dedupe_templates(templates))
             templates = structural_dedupe_templates(templates)
             if not templates:
                 logger.warning("No templates generated in Phase 3 for category=%s", cat)
@@ -1297,6 +2377,8 @@ LIMIT 10
             q_latency = (time.time() - t0) * 1000
             filled = None
             entity_hints = {}
+            selected_template = None
+            selected_row = None
             for tmpl in templates:
                 template = tmpl.get("template", "")
                 slots = tmpl.get("slots", [])
@@ -1309,11 +2391,13 @@ LIMIT 10
                     cache_key = (template, tuple(slots))
                     reverse_sparql = template_reverse_cache.get(cache_key)
                     if reverse_sparql is None:
-                        try:
-                            reverse_sparql = pipeline.reverse_query(template, slots)
-                        except Exception as exc:
-                            logger.warning("Reverse query failed in Phase 3 for category=%s: %s", cat, exc)
-                            continue
+                        reverse_sparql = render_priority_reverse_query(cat, template, slots)
+                        if reverse_sparql is None:
+                            try:
+                                reverse_sparql = pipeline.reverse_query(template, slots)
+                            except Exception as exc:
+                                logger.warning("Reverse query failed in Phase 3 for category=%s: %s", cat, exc)
+                                continue
                         template_reverse_cache[cache_key] = reverse_sparql
                     ok_parse, parse_err = parse_valid_sparql_detail(reverse_sparql)
                     if not ok_parse:
@@ -1323,7 +2407,7 @@ LIMIT 10
                             parse_err,
                             reverse_sparql,
                         )
-                    if not is_simple_reverse_query(reverse_sparql):
+                    if not is_simple_reverse_query(reverse_sparql, cat):
                         logger.warning("Reverse query not simple (phase3:%s): sparql=%s", cat, reverse_sparql)
                         continue
                     preds = extract_predicates(reverse_sparql, prefix_map)
@@ -1338,21 +2422,7 @@ LIMIT 10
                     if not body_contains_slots(reverse_sparql, slots):
                         logger.warning("Reverse query missing slot vars in body (phase3:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
                         continue
-                    cache = reverse_row_cache.get(reverse_sparql)
-                    if cache is None:
-                        ok, _, rows, err = pipeline.execute_rows(reverse_sparql)
-                        if not ok:
-                            logger.warning("Reverse query exec failed (phase3:%s): %s | sparql=%s", cat, err, reverse_sparql)
-                            reverse_row_cache[reverse_sparql] = {"rows": [], "used": set()}
-                            continue
-                        if not rows:
-                            logger.debug("Reverse query returned 0 rows (phase3:%s): sparql=%s", cat, reverse_sparql)
-                            reverse_row_cache[reverse_sparql] = {"rows": [], "used": set()}
-                            continue
-                        random.shuffle(rows)
-                        cache = {"rows": rows, "used": set()}
-                        reverse_row_cache[reverse_sparql] = cache
-                        log_row_sample(rows, "phase3", cat, logger=logger)
+                    cache = build_binding_cache(reverse_sparql, slots, "phase3", cat, template)
                     rows = cache["rows"]
                     if not rows:
                         logger.debug("Reverse query cache empty (phase3:%s): sparql=%s", cat, reverse_sparql)
@@ -1370,26 +2440,19 @@ LIMIT 10
                     )
                     if not row:
                         if template not in refreshed_templates:
-                            rand_sparql = randomize_reverse_query(
-                                reverse_sparql,
-                                reverse_query_limit,
+                            cache = build_binding_cache(reverse_sparql, slots, "phase3", cat, template, extend=True)
+                            refreshed_templates.add(template)
+                            row = select_valid_row(
+                                cache["rows"],
+                                slots,
+                                pipeline,
+                                max_row_checks,
+                                logger=logger,
+                                used_keys=cache["used"],
+                                entity_diversity=entity_diversity,
+                                category=cat,
+                                target_per_cat=target_per_category,
                             )
-                            ok, _, rrows, _ = pipeline.execute_rows(rand_sparql)
-                            if ok and rrows:
-                                cache["rows"] = rrows
-                                cache["used"] = set()
-                                refreshed_templates.add(template)
-                                row = select_valid_row(
-                                    rrows,
-                                    slots,
-                                    pipeline,
-                                    max_row_checks,
-                                    logger=logger,
-                                    used_keys=cache["used"],
-                                    entity_diversity=entity_diversity,
-                                    category=cat,
-                                    target_per_cat=target_per_category,
-                                )
                         if not row:
                             key = template
                             stall_counts[key] = stall_counts.get(key, 0) + 1
@@ -1410,7 +2473,7 @@ LIMIT 10
                             continue
                         if is_iri(val):
                             label = pipeline.label_for_uri(val)
-                            type_uri = pipeline.entity_type_for_uri(val)
+                            type_uri = slot_type_hints.get(re.sub(r"\d+$", "", slot)) or pipeline.entity_type_for_uri(val)
                             type_label = pipeline.label_for_type(type_uri) if type_uri else None
                             if type_label:
                                 filled = filled.replace("{" + slot + "}", f"({type_label}: {label})")
@@ -1424,6 +2487,8 @@ LIMIT 10
                     filled = template
                     entity_hints = {}
                 if filled:
+                    selected_template = template
+                    selected_row = row if slots else None
                     break
             if not filled:
                 continue
@@ -1436,17 +2501,19 @@ LIMIT 10
             seen_filled[phase_key].add(filled)
             examples = retrieve_examples(llm, category_stores[cat], filled, k=retrieval_top_k)
             examples = filter_retrieval_leakage(examples, filled)
-            rec = pipeline.run_single(
-                filled,
-                cat,
-                examples=examples,
-                entity_hints=entity_hints,
-                repair_attempts=repair_attempts,
-            )
+            rec = run_known_sparql(filled, cat, selected_template, selected_row, examples)
+            if rec is None:
+                rec = pipeline.run_single(
+                    filled,
+                    cat,
+                    examples=examples,
+                    entity_hints=entity_hints,
+                    repair_attempts=repair_attempts,
+                )
             rec.question_latency_ms = q_latency
             append_record_jsonl(str(log_path), rec)
 
-            status = "OK" if rec.exec_success else "FAIL"
+            status = "OK" if rec.exec_success and not rec.error_type else "FAIL"
             logger.info(
                 "[phase3:%s] %d/%d %s | parse=%s exec_ms=%.1f llm_ms=%.1f q_ms=%.1f answers=%d error=%s overall=%.1f%% cat=%d/%d",
                 cat,
@@ -1464,7 +2531,7 @@ LIMIT 10
                 len(categories),
             )
 
-            if not rec.exec_success:
+            if (not rec.exec_success) or rec.error_type:
                 continue
             if accepted > 0 and is_duplicate(llm, phase3_dedupe_stores[cat], rec.question, dup_sim_threshold):
                 logger.debug("Duplicate detected in phase3 for category=%s", cat)
@@ -1612,12 +2679,12 @@ LIMIT 10
     # Auto-generate figures for this run
     logger.info("Generating figures...")
     subprocess.run(
-        ["python", "scripts/generate_figures_from_logs.py", "--run-id", run_id],
+        [sys.executable, "scripts/generate_figures_from_logs.py", "--run-id", run_id],
         check=False,
     )
     logger.info("Generating strategy analysis...")
     subprocess.run(
-        ["python", "scripts/generate_strategy_analysis.py", "--run-id", run_id],
+        [sys.executable, "scripts/generate_strategy_analysis.py", "--run-id", run_id],
         check=False,
     )
 

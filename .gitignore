@@ -97,6 +97,8 @@ experiments/
 results/
 plots/
 figures/
+!paper_acl2026_industry/figures/
+!paper_acl2026_industry/figures/*.png
 
 # Coverage reports
 htmlcov/
@@ -134,3 +136,6 @@ artifacts/
 *.run.xml
 *.synctex.gz
 *.toc
+
+# Generated paper outputs
+paper_acl2026_industry/acl_latex.pdf

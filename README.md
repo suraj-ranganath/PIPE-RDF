@@ -1,54 +1,105 @@
 # PIPE-RDF
 
-## Paper Title
+This is the anonymous reviewer branch for:
 
-**PIPE-RDF: An LLM-Assisted Pipeline for Enterprise RDF Benchmarking**
+> PIPE-RDF: Execution-Grounded Generation of Schema-Specific NL-SPARQL Benchmarks
 
-## Abstract
+PIPE-RDF builds schema-specific natural-language-to-SPARQL benchmarks for RDF knowledge graphs. It grounds benchmark generation in the target graph through reverse querying, category-balanced templates, retrieval-augmented prompting, deduplication, and parse/execution validation.
 
-Enterprises rely on RDF knowledge graphs and SPARQL to expose operational data through natural language interfaces, yet public KGQA benchmarks do not reflect proprietary schemas, prefixes, or query distributions. PIPE-RDF is a three-phase pipeline that constructs schema-specific NL-SPARQL benchmarks using reverse querying, category-balanced template generation, retrieval-augmented prompting, deduplication, and execution-based validation with repair. The pipeline is designed to produce evaluation-ready benchmark artifacts and operational metrics for real-world deployment planning.
+This branch contains the current code and configurations needed to reproduce the reviewer-facing experiments. Author-identifying paper metadata, public links, and non-anonymous project notes are intentionally omitted from this branch.
 
-## Repository Overview
+## Contents
 
-- `pipekg/`: Core pipeline implementation.
-- `scripts/`: Execution scripts for setup checks, generation, and utilities.
-- `configs/`: Smoke/full run configuration files.
-- `db_setup.md`: Local triple-store setup guide.
+- `pipekg/`: Core benchmark generation pipeline.
+- `configs/`: Smoke, full-run, ARR-scale, cross-model, and top-up configurations.
+- `scripts/`: GraphDB, vLLM, generation, audit, utility-evaluation, and summarization scripts.
+- `db_setup.md`: Local GraphDB setup notes.
+- `AGENTS.md`: Operational instructions for agents running the experiments.
+
+## Experiment Scope
+
+The ARR-scale configuration targets:
+
+- Two RDF schemas: a controlled company-location schema and an LDBC SPB graph.
+- Nine categories: generic, counting, comparative, superlative, ordinal, multi-hop, intersection, difference, and yes/no.
+- 200 Phase-3 records per category per schema for the main runs.
+- Qwen3.5 open models served through vLLM for generation and robustness probes.
+- A stratified LLM-judge semantic audit and a downstream utility evaluation.
+
+Generated datasets, logs, model outputs, and local GraphDB data are not committed. They should remain under ignored artifact directories.
 
 ## Setup
 
-1. Create and activate a virtual environment.
+Create an environment and install dependencies:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-2. Install dependencies.
-
-```bash
 pip install -r requirements.txt
 ```
 
-3. Configure environment variables.
+Create a local environment file:
 
 ```bash
 cp .env.example .env
 ```
 
-4. Update `.env` with your SPARQL endpoint and model settings.
-
-- `SPARQL_ENDPOINT_URL` should point to your running endpoint.
-- If using OpenAI, set `OPENAI_API_KEY`.
-- If using Ollama, ensure local models are available.
-
-5. Prepare and verify your RDF endpoint.
+Set the SPARQL endpoint for the active GraphDB repository:
 
 ```bash
+SPARQL_ENDPOINT_URL=http://localhost:7200/repositories/spb_1m
+```
+
+## LLM Providers
+
+For Ollama:
+
+```bash
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_CHAT_MODEL=qwen3:4b-instruct
+OLLAMA_EMBED_MODEL=bge-m3:latest
+```
+
+For vLLM or another OpenAI-compatible endpoint:
+
+```bash
+LLM_PROVIDER=openai_compatible
+OPENAI_BASE_URL=http://localhost:8000/v1
+OPENAI_CHAT_MODEL=Qwen/Qwen3.5-4B
+OPENAI_API_KEY=EMPTY
+EMBED_PROVIDER=sentence_transformers
+LOCAL_EMBED_MODEL=BAAI/bge-m3
+```
+
+## GraphDB
+
+For local setup, see `db_setup.md`.
+
+For the remote experiment server, use:
+
+```bash
+bash scripts/ds_serv6_graphdb.sh status
+bash scripts/ds_serv6_graphdb.sh health
+```
+
+If GraphDB or a SPARQL endpoint becomes unresponsive, restart and health-check it before resuming runs:
+
+```bash
+bash scripts/ds_serv6_graphdb.sh restart
+bash scripts/ds_serv6_graphdb.sh health
+```
+
+## Preflight
+
+Run preflight checks before full experiments:
+
+```bash
+python scripts/preflight_check.py --config configs/smoke_test.yaml
 python scripts/verify_endpoint.py
 ```
 
-## Run
+## Generation Runs
 
 Smoke run:
 
@@ -56,16 +107,57 @@ Smoke run:
 python scripts/run_pipeline_ollama.py --config configs/smoke_test.yaml
 ```
 
-Full run:
+Main Schema C run:
 
 ```bash
-python scripts/run_pipeline_ollama.py --config configs/full_run.yaml
+python scripts/run_pipeline_ollama.py --config configs/arr_schema_c_200.yaml
 ```
 
-## Preflight Check
-
-Run the environment preflight before full experiments:
+Main SPB run:
 
 ```bash
-python scripts/preflight_check.py --config configs/smoke_test.yaml
+python scripts/run_pipeline_ollama.py --config configs/arr_spb_full_200.yaml
 ```
+
+Cross-model probes:
+
+```bash
+python scripts/run_pipeline_ollama.py --config configs/arr_cross_model_schema_c_50.yaml
+python scripts/run_pipeline_ollama.py --config configs/arr_cross_model_spb_full_50.yaml
+```
+
+## Evaluation Utilities
+
+Summarize benchmark artifacts:
+
+```bash
+python scripts/summarize_benchmark_artifact.py --input path/to/phase3.jsonl
+```
+
+Sample semantic-audit records:
+
+```bash
+python scripts/sample_semantic_audit.py --input path/to/phase3.jsonl --output audit_packet.csv
+```
+
+Run the dual LLM semantic judges:
+
+```bash
+python scripts/evaluate_semantic_llm_judges.py \
+  --input audit_packet.csv \
+  --output-dir artifacts/llm_semantic_audit/run_name \
+  --judge openai \
+  --judge xai
+```
+
+Run downstream utility evaluation:
+
+```bash
+python scripts/evaluate_downstream_utility.py --help
+```
+
+## Reviewer Notes
+
+- This branch is intended for anonymous review.
+- Do not commit API keys, generated logs, model outputs, or GraphDB data.
+- Use `main` only for the public, non-anonymous code release after review.
