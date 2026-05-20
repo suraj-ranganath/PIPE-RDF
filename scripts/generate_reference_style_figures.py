@@ -245,7 +245,7 @@ def generate_schema_figure(path: Path) -> None:
 
 
 def main() -> None:
-    out_dir = Path("paper_acl2026_industry/figures")
+    out_dir = Path("artifacts/figures/reference_style")
     generate_pipeline_figure(out_dir / "pipeline_architecture.png")
     generate_schema_figure(out_dir / "schema_ontology.png")
     print("Generated reference-style figures in", out_dir)

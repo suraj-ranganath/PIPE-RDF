@@ -1,51 +1,28 @@
 # PIPE-RDF
 
-PIPE-RDF builds schema-specific natural-language-to-SPARQL benchmarks for RDF knowledge graphs. It generates executable question/query pairs by grounding templates in graph bindings, balancing query categories, retrieving category-relevant examples, deduplicating outputs, and validating every SPARQL query through parse and execution checks.
+PIPE-RDF builds schema-specific natural-language-to-SPARQL benchmarks for RDF knowledge graphs. It grounds generation in the target graph, balances query categories, validates every SPARQL query by parsing and execution, and writes reproducible run artifacts for benchmark construction and downstream NL-to-SPARQL evaluation.
 
-The current public snapshot supports the ARR-scale revision of:
+This branch is the public code branch. Paper drafts, submission packages, and anonymous-review source files are intentionally not kept here.
 
-> PIPE-RDF: Execution-Grounded Generation of Schema-Specific NL-SPARQL Benchmarks
+## Features
 
-## What This Repository Contains
-
-- A three-phase benchmark generation pipeline for NL-SPARQL data.
 - Reverse-query grounding so generated questions are answerable on the target graph.
-- Category-balanced generation across nine KGQA-style categories: generic, counting, comparative, superlative, ordinal, multi-hop, intersection, difference, and yes/no.
-- GraphDB/SPARQL execution validation with repair and run manifests.
-- Open model serving through Ollama or OpenAI-compatible endpoints such as vLLM.
-- Local sentence-transformer embeddings with `BAAI/bge-m3`.
-- Utilities for schema profiling, binding-bank construction, benchmark summarization, downstream utility evaluation, and dual LLM semantic judging.
-
-## Current Evaluation Scope
-
-The ARR-scale configuration targets two RDF schemas and 3,600 Phase-3 benchmark records:
-
-- Schema C company-location slice: 9 categories x 200 records.
-- LDBC SPB graph: 9 categories x 200 records.
-- Primary generator: `Qwen/Qwen3.5-4B` through vLLM.
-- Robustness probes: `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B`, and `Qwen/Qwen3.5-9B`.
-- Semantic quality check: a 216-record stratified audit judged by two strong LLM judges.
-- Downstream utility check: schema-only zero-shot vs category-RAG prompting.
-
-Generated datasets, logs, GraphDB data, and model outputs are intentionally ignored by Git. Commit only code, configs, documentation, selected paper-ready figures, and reproducible summaries.
+- Category-balanced generation across generic, counting, comparative, superlative, ordinal, multi-hop, intersection, difference, and yes/no query types.
+- GraphDB/SPARQL validation with strict parse, execution, answer-shape, and category-form checks.
+- Binding-bank sampling and batched label/type lookup to avoid repeated expensive SPARQL calls during large runs.
+- LLM backends through Ollama or OpenAI-compatible endpoints such as vLLM.
+- Local embeddings through `sentence-transformers` with `BAAI/bge-m3`.
+- Utilities for schema profiling, benchmark summarization, semantic LLM judging, and downstream utility evaluation.
 
 ## Repository Layout
 
 - `pipekg/`: Core pipeline modules.
-- `configs/`: Smoke, full-run, ARR-scale, and top-up run configurations.
-- `scripts/`: Experiment, GraphDB, vLLM, audit, utility, and summarization scripts.
-- `paper_acl2026_industry/`: Legacy public paper source from the earlier ACL Industry submission.
-- `knowledge_base/`: Legacy planning and related-work notes.
-- `db_setup.md`: Local GraphDB setup notes.
+- `configs/`: Smoke, full-run, ARR-scale, cross-model, and top-up run configurations.
+- `scripts/`: GraphDB, vLLM, generation, audit, evaluation, and summarization scripts.
+- `db_setup.md`: GraphDB setup and loading notes.
 - `AGENTS.md`: Operational instructions for Codex agents working in this repository.
 
-## Branches
-
-- `main`: Public branch for released code, public-facing documentation, and community use.
-- `paper-ready`: Anonymous reviewer branch. It should contain the current code/configs but no author-identifying paper metadata or public links.
-- `arr-revision`: Working branch for ARR paper text, submission packaging, revision notes, and arXiv mirroring.
-- `pre-submission`: Legacy arXiv/pre-submission snapshot.
-- `feat/arr-eval-scaling`: Development branch for ARR-scale code changes before they are promoted to `main`.
+Generated datasets, logs, GraphDB data, local model outputs, and paper/submission workspaces are ignored by Git.
 
 ## Setup
 
@@ -63,29 +40,15 @@ Copy the example environment file:
 cp .env.example .env
 ```
 
-Configure GraphDB:
+Set the SPARQL endpoint for your GraphDB repository:
 
 ```bash
 SPARQL_ENDPOINT_URL=http://localhost:7200/repositories/spb_1m
 ```
 
-For local GraphDB setup, use `db_setup.md`. On `ds-serv6`, use:
-
-```bash
-bash scripts/ds_serv6_graphdb.sh status
-bash scripts/ds_serv6_graphdb.sh health
-```
-
-If GraphDB or a SPARQL endpoint becomes unresponsive during a run, restart and health-check the service before continuing:
-
-```bash
-bash scripts/ds_serv6_graphdb.sh restart
-bash scripts/ds_serv6_graphdb.sh health
-```
+For GraphDB setup and data loading, see `db_setup.md`.
 
 ## LLM Providers
-
-PIPE-RDF supports the original Ollama path and OpenAI-compatible endpoints.
 
 For Ollama:
 
@@ -107,11 +70,26 @@ EMBED_PROVIDER=sentence_transformers
 LOCAL_EMBED_MODEL=BAAI/bge-m3
 ```
 
-Example vLLM setup for `ds-serv6`:
+Smoke-test an OpenAI-compatible endpoint:
 
 ```bash
-bash scripts/ds_serv6_setup_vllm.sh
 python scripts/vllm_smoke.py --base-url http://localhost:8000/v1 --model Qwen/Qwen3.5-4B
+```
+
+## GraphDB Operations
+
+On `ds-serv6`, the helper script manages GraphDB lifecycle and health checks:
+
+```bash
+bash scripts/ds_serv6_graphdb.sh status
+bash scripts/ds_serv6_graphdb.sh health
+bash scripts/ds_serv6_graphdb.sh restart
+```
+
+For local development, start GraphDB using the instructions in `db_setup.md`, then verify the configured endpoint:
+
+```bash
+python scripts/verify_endpoint.py
 ```
 
 ## Preflight Checks
@@ -120,12 +98,6 @@ Run a config-level preflight before launching an experiment:
 
 ```bash
 python scripts/preflight_check.py --config configs/smoke_test.yaml
-```
-
-Verify the configured endpoint:
-
-```bash
-python scripts/verify_endpoint.py
 ```
 
 ## Running PIPE-RDF
@@ -155,7 +127,7 @@ python scripts/run_pipeline_ollama.py --config configs/arr_cross_model_schema_c_
 python scripts/run_pipeline_ollama.py --config configs/arr_cross_model_spb_full_50.yaml
 ```
 
-On `ds-serv6`, the helper script coordinates GraphDB, vLLM endpoints, and tmux-backed jobs:
+On `ds-serv6`, use tmux-backed helper scripts for longer runs:
 
 ```bash
 bash scripts/ds_serv6_run_arr_experiments.sh
@@ -175,7 +147,7 @@ Summarize a benchmark artifact:
 python scripts/summarize_benchmark_artifact.py --input path/to/phase3.jsonl
 ```
 
-Sample a semantic audit packet:
+Sample a semantic-audit packet:
 
 ```bash
 python scripts/sample_semantic_audit.py --input path/to/phase3.jsonl --output audit_packet.csv
@@ -191,15 +163,15 @@ python scripts/evaluate_semantic_llm_judges.py \
   --judge xai
 ```
 
-Run the downstream utility evaluation:
+Run downstream utility evaluation:
 
 ```bash
 python scripts/evaluate_downstream_utility.py --help
 ```
 
-## Reproducibility Notes
+## Reproducibility
 
 - Keep `.env` local and never commit API keys or GraphDB credentials.
 - Keep generated artifacts under ignored directories such as `artifacts/`, `experiments/`, or `results/`.
 - Record the exact config, model, endpoint, GraphDB repository, and run manifest for each reported experiment.
-- For anonymous review, use the `paper-ready` branch rather than `main`.
+- Keep paper drafts and submission packages outside `main`; use dedicated paper/review branches for those.

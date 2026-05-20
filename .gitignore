@@ -97,8 +97,6 @@ experiments/
 results/
 plots/
 figures/
-!paper_acl2026_industry/figures/
-!paper_acl2026_industry/figures/*.png
 
 # Coverage reports
 htmlcov/
@@ -137,5 +135,10 @@ artifacts/
 *.synctex.gz
 *.toc
 
-# Generated paper outputs
-paper_acl2026_industry/acl_latex.pdf
+# Paper/submission workspaces are kept off the public code branch.
+paper_acl2026_industry/
+arxiv/
+arr_submission/
+arr_resubmission_notes.*
+PIPE-RDF-arxiv-submission.zip
+knowledge_base/
