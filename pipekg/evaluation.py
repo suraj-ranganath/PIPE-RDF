@@ -279,6 +279,25 @@ def validate_answer_type(category: str, answers: List[str], query: str) -> bool:
 
     upper = query.upper()
 
+    # Boolean ASK forms are only semantically valid for boolean/comparison categories.
+    if "ASK" in upper and "SELECT" not in upper and category not in {"yesno", "comparative", "difference"}:
+        return False
+
+    if category == "ordinal":
+        return "ORDER BY" in upper and "OFFSET" in upper and "LIMIT 1" in upper
+
+    if category == "superlative":
+        return "ORDER BY" in upper and "LIMIT 1" in upper
+
+    if category == "counting" and "COUNT" not in upper:
+        return False
+
+    if category in {"yesno", "comparative", "difference"} and ("ASK" not in upper or "SELECT" in upper):
+        return False
+
+    if category in {"generic", "multi-hop", "intersection"} and ("ASK" in upper and "SELECT" not in upper):
+        return False
+
     # Counting queries should return numeric answers
     if category == "counting":
         for ans in answers:

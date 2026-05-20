@@ -16,7 +16,7 @@ Use ONLY relations and entity types that appear in the schema summary (especiall
 Each template must be fillable by real entities in the graph and easy to answer with a simple SPARQL query.
 Limit slots to at most 2 entities (0 or 1 preferred).
 Only place entities where it makes sense in the question; avoid over-specifying.
-Questions must sound like realistic customer questions asked to a company about its knowledge graph.
+Questions must sound like realistic user questions asked about the knowledge graph.
 Keep questions natural and human-like, but ensure they are directly and unambiguously answerable from the graph.
 Avoid schema-probing or meaningless questions (e.g., "type of", "RDF rank", "most famous", "most popular").
 Avoid placeholders like "metric", "feature", or "rdfRank" unless they are actual entities in the schema.

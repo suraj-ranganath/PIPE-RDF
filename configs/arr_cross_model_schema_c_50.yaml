@@ -1,0 +1,62 @@
+llm_provider: openai_compatible
+openai_base_url: http://localhost:8010/v1
+
+models:
+  chat: Qwen/Qwen3.5-4B
+  embed_provider: sentence_transformers
+  embed: BAAI/bge-m3
+  local_embed_device: cpu
+
+sparql_endpoint_url: http://localhost:7200/repositories/spb_company_mini_slice
+schema_summary_path: configs/schema_company_mini_summary.txt
+preferred_types:
+  - dbo:Company
+  - gn:Feature
+  - foaf:Person
+skip_preferred_types: true
+use_common_allowed: false
+allowed_predicates:
+  - rdf:type
+  - rdfs:label
+  - spb:prefLabel
+  - dbo:location
+  - dbo:industry
+  - dbo:keyPerson
+  - dbo:foundingYear
+  - dbo:numberOfEmployees
+  - foaf:name
+allowed_types:
+  - dbo:Company
+  - gn:Feature
+  - foaf:Person
+slot_type_hints:
+  company: dbo:Company
+  location: gn:Feature
+  person: foaf:Person
+
+sizes:
+  phase1_templates_per_category: 5
+  phase1_seeds_per_template: 8
+  phase2_seeds_per_category: 20
+  target_per_category: 50
+
+template_candidates: 4
+reverse_query_timeout_sec: 60
+max_attempts_factor: 6
+max_row_checks: 60
+predicate_whitelist_topk: 500
+schema_summary_topk: 50
+schema_timeout_sec: 60
+sparql_infer: false
+sparql_timeout_sec: 120
+generated_query_limit: 5
+binding_bank_target_rows: 250
+binding_bank_query_limit: 125
+binding_bank_offset_stride: 125
+binding_bank_max_queries: 2
+binding_bank_extend_queries: 1
+binding_bank_batch_size: 200
+retrieval_top_k: 3
+repair_attempts: 1
+dup_sim_threshold: 0.97
+max_entity_pct: 0.50
