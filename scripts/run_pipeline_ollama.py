@@ -1973,9 +1973,36 @@ LIMIT 10
     # Phase 1: template generation + reverse querying (seeds for retrieval)
     logger.info("Phase 1: template generation + reverse querying")
     phase1_records = []
+    def new_proposal_bucket() -> dict[str, int | bool]:
+        return {
+            "target": 0,
+            "max_outer_attempts": 0,
+            "outer_attempts": 0,
+            "template_items_seen": 0,
+            "reverse_query_failures": 0,
+            "reverse_query_parse_failures": 0,
+            "reverse_query_form_rejections": 0,
+            "predicate_type_rejections": 0,
+            "empty_binding_caches": 0,
+            "no_valid_binding_rows": 0,
+            "pre_llm_duplicates": 0,
+            "candidate_attempts": 0,
+            "validation_failures": 0,
+            "duplicate_drops": 0,
+            "accepted": 0,
+            "exhausted": False,
+        }
+
+    proposal_stats = {
+        "phase1": defaultdict(new_proposal_bucket),
+        "phase2": defaultdict(new_proposal_bucket),
+        "phase3": defaultdict(new_proposal_bucket),
+    }
     for cat_idx, cat in enumerate(categories, start=1):
         logger.info("Phase 1 category: %s (%d/%d) | overall=%.1f%%", cat, cat_idx, len(categories), overall_pct())
         target_phase1 = phase1_templates_per_category * phase1_seeds_per_template
+        stats = proposal_stats["phase1"][cat]
+        stats["target"] = target_phase1
         accepted = 0
         try:
             templates = pipeline.generate_templates(
@@ -1998,6 +2025,7 @@ LIMIT 10
             slots = item.get("slots", [])
             if not template:
                 continue
+            stats["template_items_seen"] += 1
             avoid_templates[cat].append(template)
             if slots:
                 cache_key = (template, tuple(slots))
@@ -2009,10 +2037,12 @@ LIMIT 10
                             reverse_sparql = pipeline.reverse_query(template, slots)
                         except Exception as exc:
                             logger.warning("Reverse query failed in Phase 1 for category=%s: %s", cat, exc)
+                            stats["reverse_query_failures"] += 1
                             continue
                     template_reverse_cache[cache_key] = reverse_sparql
                 ok_parse, parse_err = parse_valid_sparql_detail(reverse_sparql)
                 if not ok_parse:
+                    stats["reverse_query_parse_failures"] += 1
                     logger.warning(
                         "Reverse query parse failed (phase1:%s): %s | sparql=%s",
                         cat,
@@ -2021,23 +2051,29 @@ LIMIT 10
                     )
                 if not is_simple_reverse_query(reverse_sparql, cat):
                     logger.warning("Reverse query not simple (phase1:%s): sparql=%s", cat, reverse_sparql)
+                    stats["reverse_query_form_rejections"] += 1
                     continue
                 preds = extract_predicates(reverse_sparql, prefix_map)
                 if not validate_predicates(preds, "phase1", cat, reverse_sparql):
+                    stats["predicate_type_rejections"] += 1
                     continue
                 types = extract_types(reverse_sparql, prefix_map)
                 if not validate_types(types, "phase1", cat, reverse_sparql):
+                    stats["predicate_type_rejections"] += 1
                     continue
                 if not select_vars_cover_slots(reverse_sparql, slots):
                     logger.warning("Reverse query missing slot vars (phase1:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
+                    stats["reverse_query_form_rejections"] += 1
                     continue
                 if not body_contains_slots(reverse_sparql, slots):
                     logger.warning("Reverse query missing slot vars in body (phase1:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
+                    stats["reverse_query_form_rejections"] += 1
                     continue
                 cache = build_binding_cache(reverse_sparql, slots, "phase1", cat, template)
                 rows = cache["rows"]
                 if not rows:
                     logger.debug("Reverse query cache empty (phase1:%s): sparql=%s", cat, reverse_sparql)
+                    stats["empty_binding_caches"] += 1
                     continue
                 for _ in range(phase1_seeds_per_template):
                     row = select_valid_row(
@@ -2049,6 +2085,7 @@ LIMIT 10
                         used_keys=cache["used"],
                     )
                     if not row:
+                        stats["no_valid_binding_rows"] += 1
                         break
                     entity_hints = {}
                     filled = template
@@ -2066,10 +2103,12 @@ LIMIT 10
                             filled = filled.replace("{" + slot + "}", label)
                             entity_hints[slot] = val
                     logger.debug("Filled question (phase1:%s cat=%d/%d): %s", cat, cat_idx, len(categories), filled)
+                    stats["candidate_attempts"] += 1
                     rec = run_known_sparql(filled, cat, template, row, examples=None)
                     if rec is None:
                         rec = pipeline.run_single(filled, cat, entity_hints=entity_hints, repair_attempts=repair_attempts)
                     if (not rec.exec_success) or rec.error_type:
+                        stats["validation_failures"] += 1
                         append_record_jsonl(str(log_path), rec)
                         continue
                     phase1_records.append(rec)
@@ -2081,10 +2120,12 @@ LIMIT 10
             else:
                 for _ in range(min(phase1_seeds_per_template, 1)):
                     logger.debug("Filled question (phase1:%s cat=%d/%d): %s", cat, cat_idx, len(categories), template)
+                    stats["candidate_attempts"] += 1
                     rec = run_known_sparql(template, cat, template, row=None, examples=None)
                     if rec is None:
                         rec = pipeline.run_single(template, cat, repair_attempts=repair_attempts)
                     if (not rec.exec_success) or rec.error_type:
+                        stats["validation_failures"] += 1
                         append_record_jsonl(str(log_path), rec)
                         continue
                     phase1_records.append(rec)
@@ -2093,6 +2134,8 @@ LIMIT 10
                     append_record_jsonl(str(log_path), rec)
                     if accepted >= target_phase1:
                         break
+        stats["accepted"] = accepted
+        stats["exhausted"] = accepted < target_phase1
         logger.info("Phase 1 category complete: %s accepted=%d/%d", cat, accepted, target_phase1)
 
     logger.info("Phase 1 complete: %d records", len(phase1_records))
@@ -2122,6 +2165,9 @@ LIMIT 10
         accepted = 0
         attempts = 0
         max_attempts = phase2_seeds_per_category * max_attempts_factor
+        stats = proposal_stats["phase2"][cat]
+        stats["target"] = phase2_seeds_per_category
+        stats["max_outer_attempts"] = max_attempts
         stall_counts: dict[str, int] = {}
         stall_limit = max(3, template_candidates * 3)
         dead_templates: set[str] = set()
@@ -2129,6 +2175,7 @@ LIMIT 10
         phase2_templates_by_cat[cat] = []
         while accepted < phase2_seeds_per_category and attempts < max_attempts:
             attempts += 1
+            stats["outer_attempts"] = attempts
             t0 = time.time()
             try:
                 templates = pipeline.generate_templates(
@@ -2154,6 +2201,7 @@ LIMIT 10
                 slots = tmpl.get("slots", [])
                 if not template:
                     continue
+                stats["template_items_seen"] += 1
                 if template in dead_templates:
                     continue
                 avoid_templates[cat].append(template)
@@ -2167,10 +2215,12 @@ LIMIT 10
                                 reverse_sparql = pipeline.reverse_query(template, slots)
                             except Exception as exc:
                                 logger.warning("Reverse query failed in Phase 2 for category=%s: %s", cat, exc)
+                                stats["reverse_query_failures"] += 1
                                 continue
                         template_reverse_cache[cache_key] = reverse_sparql
                     ok_parse, parse_err = parse_valid_sparql_detail(reverse_sparql)
                     if not ok_parse:
+                        stats["reverse_query_parse_failures"] += 1
                         logger.warning(
                             "Reverse query parse failed (phase2:%s): %s | sparql=%s",
                             cat,
@@ -2179,23 +2229,29 @@ LIMIT 10
                         )
                     if not is_simple_reverse_query(reverse_sparql, cat):
                         logger.warning("Reverse query not simple (phase2:%s): sparql=%s", cat, reverse_sparql)
+                        stats["reverse_query_form_rejections"] += 1
                         continue
                     preds = extract_predicates(reverse_sparql, prefix_map)
                     if not validate_predicates(preds, "phase2", cat, reverse_sparql):
+                        stats["predicate_type_rejections"] += 1
                         continue
                     types = extract_types(reverse_sparql, prefix_map)
                     if not validate_types(types, "phase2", cat, reverse_sparql):
+                        stats["predicate_type_rejections"] += 1
                         continue
                     if not select_vars_cover_slots(reverse_sparql, slots):
                         logger.warning("Reverse query missing slot vars (phase2:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
+                        stats["reverse_query_form_rejections"] += 1
                         continue
                     if not body_contains_slots(reverse_sparql, slots):
                         logger.warning("Reverse query missing slot vars in body (phase2:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
+                        stats["reverse_query_form_rejections"] += 1
                         continue
                     cache = build_binding_cache(reverse_sparql, slots, "phase2", cat, template)
                     rows = cache["rows"]
                     if not rows:
                         logger.debug("Reverse query cache empty (phase2:%s): sparql=%s", cat, reverse_sparql)
+                        stats["empty_binding_caches"] += 1
                         continue
                     row = select_valid_row(
                         rows,
@@ -2224,6 +2280,7 @@ LIMIT 10
                                 target_per_cat=phase2_seeds_per_category,
                             )
                         if not row:
+                            stats["no_valid_binding_rows"] += 1
                             key = template
                             stall_counts[key] = stall_counts.get(key, 0) + 1
                             if stall_counts[key] >= stall_limit:
@@ -2262,12 +2319,14 @@ LIMIT 10
                     selected_row = row if slots else None
                     break
             if not filled:
+                stats["no_valid_binding_rows"] += 1
                 continue
 
             logger.debug("Filled question (phase2:%s): %s", cat, filled)
             phase_key = f"phase2:{cat}"
             if filled in seen_filled[phase_key]:
                 logger.debug("Filled question duplicate pre-LLM (phase2:%s): %s", cat, filled)
+                stats["pre_llm_duplicates"] += 1
                 continue
             seen_filled[phase_key].add(filled)
             examples = retrieve_examples(llm, global_store, filled, k=retrieval_top_k) if global_store else []
@@ -2282,6 +2341,7 @@ LIMIT 10
                     repair_attempts=repair_attempts,
                 )
             rec.question_latency_ms = q_latency
+            stats["candidate_attempts"] += 1
             append_record_jsonl(str(log_path), rec)
 
             status = "OK" if rec.exec_success and not rec.error_type else "FAIL"
@@ -2303,13 +2363,16 @@ LIMIT 10
             )
 
             if (not rec.exec_success) or rec.error_type:
+                stats["validation_failures"] += 1
                 continue
             if is_duplicate(llm, category_stores[cat], rec.question, dup_sim_threshold):
                 logger.debug("Duplicate detected in phase2 for category=%s", cat)
+                stats["duplicate_drops"] += 1
                 continue
 
             phase2_records.append(rec)
             accepted += 1
+            stats["accepted"] = accepted
             overall_done += 1
             # Record entity usage for diversity tracking
             if entity_hints:
@@ -2321,6 +2384,8 @@ LIMIT 10
                 phase2_templates_by_cat[cat].append(
                     {"template": selected_template, "slots": selected_slots or []}
                 )
+        stats["accepted"] = accepted
+        stats["exhausted"] = accepted < phase2_seeds_per_category
 
     for cat in categories:
         if category_stores[cat] is None or not category_stores[cat].metadata:
@@ -2351,12 +2416,16 @@ LIMIT 10
         accepted = 0
         attempts = 0
         max_attempts = target_per_category * max_attempts_factor
+        stats = proposal_stats["phase3"][cat]
+        stats["target"] = target_per_category
+        stats["max_outer_attempts"] = max_attempts
         stall_counts: dict[str, int] = {}
         stall_limit = max(3, template_candidates * 3)
         dead_templates: set[str] = set()
         refreshed_templates: set[str] = set()
         while accepted < target_per_category and attempts < max_attempts:
             attempts += 1
+            stats["outer_attempts"] = attempts
             t0 = time.time()
             templates = phase2_templates_by_cat.get(cat) or []
             if not templates:
@@ -2384,6 +2453,7 @@ LIMIT 10
                 slots = tmpl.get("slots", [])
                 if not template:
                     continue
+                stats["template_items_seen"] += 1
                 if template in dead_templates:
                     continue
                 avoid_templates[cat].append(template)
@@ -2397,10 +2467,12 @@ LIMIT 10
                                 reverse_sparql = pipeline.reverse_query(template, slots)
                             except Exception as exc:
                                 logger.warning("Reverse query failed in Phase 3 for category=%s: %s", cat, exc)
+                                stats["reverse_query_failures"] += 1
                                 continue
                         template_reverse_cache[cache_key] = reverse_sparql
                     ok_parse, parse_err = parse_valid_sparql_detail(reverse_sparql)
                     if not ok_parse:
+                        stats["reverse_query_parse_failures"] += 1
                         logger.warning(
                             "Reverse query parse failed (phase3:%s): %s | sparql=%s",
                             cat,
@@ -2409,23 +2481,29 @@ LIMIT 10
                         )
                     if not is_simple_reverse_query(reverse_sparql, cat):
                         logger.warning("Reverse query not simple (phase3:%s): sparql=%s", cat, reverse_sparql)
+                        stats["reverse_query_form_rejections"] += 1
                         continue
                     preds = extract_predicates(reverse_sparql, prefix_map)
                     if not validate_predicates(preds, "phase3", cat, reverse_sparql):
+                        stats["predicate_type_rejections"] += 1
                         continue
                     types = extract_types(reverse_sparql, prefix_map)
                     if not validate_types(types, "phase3", cat, reverse_sparql):
+                        stats["predicate_type_rejections"] += 1
                         continue
                     if not select_vars_cover_slots(reverse_sparql, slots):
                         logger.warning("Reverse query missing slot vars (phase3:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
+                        stats["reverse_query_form_rejections"] += 1
                         continue
                     if not body_contains_slots(reverse_sparql, slots):
                         logger.warning("Reverse query missing slot vars in body (phase3:%s): slots=%s sparql=%s", cat, slots, reverse_sparql)
+                        stats["reverse_query_form_rejections"] += 1
                         continue
                     cache = build_binding_cache(reverse_sparql, slots, "phase3", cat, template)
                     rows = cache["rows"]
                     if not rows:
                         logger.debug("Reverse query cache empty (phase3:%s): sparql=%s", cat, reverse_sparql)
+                        stats["empty_binding_caches"] += 1
                         continue
                     row = select_valid_row(
                         rows,
@@ -2454,6 +2532,7 @@ LIMIT 10
                                 target_per_cat=target_per_category,
                             )
                         if not row:
+                            stats["no_valid_binding_rows"] += 1
                             key = template
                             stall_counts[key] = stall_counts.get(key, 0) + 1
                             if stall_counts[key] >= stall_limit:
@@ -2491,12 +2570,14 @@ LIMIT 10
                     selected_row = row if slots else None
                     break
             if not filled:
+                stats["no_valid_binding_rows"] += 1
                 continue
 
             logger.debug("Filled question (phase3:%s): %s", cat, filled)
             phase_key = f"phase3:{cat}"
             if filled in seen_filled[phase_key]:
                 logger.debug("Filled question duplicate pre-LLM (phase3:%s): %s", cat, filled)
+                stats["pre_llm_duplicates"] += 1
                 continue
             seen_filled[phase_key].add(filled)
             examples = retrieve_examples(llm, category_stores[cat], filled, k=retrieval_top_k)
@@ -2511,6 +2592,7 @@ LIMIT 10
                     repair_attempts=repair_attempts,
                 )
             rec.question_latency_ms = q_latency
+            stats["candidate_attempts"] += 1
             append_record_jsonl(str(log_path), rec)
 
             status = "OK" if rec.exec_success and not rec.error_type else "FAIL"
@@ -2532,13 +2614,16 @@ LIMIT 10
             )
 
             if (not rec.exec_success) or rec.error_type:
+                stats["validation_failures"] += 1
                 continue
             if accepted > 0 and is_duplicate(llm, phase3_dedupe_stores[cat], rec.question, dup_sim_threshold):
                 logger.debug("Duplicate detected in phase3 for category=%s", cat)
+                stats["duplicate_drops"] += 1
                 continue
 
             phase3_records.append(rec)
             accepted += 1
+            stats["accepted"] = accepted
             overall_done += 1
             # Record entity usage for diversity tracking
             if entity_hints:
@@ -2552,6 +2637,8 @@ LIMIT 10
                 rec.category,
             )
             category_stores[cat] = add_example_to_store(llm, category_stores[cat], rec.question, rec.sparql, rec.category)
+        stats["accepted"] = accepted
+        stats["exhausted"] = accepted < target_per_category
 
     # Save dataset outputs
     jsonl_phase1 = data_dir / "benchmark_phase1.jsonl"
@@ -2772,6 +2859,13 @@ LIMIT 10
         "phase1": summarize(phase1_records, "Phase1"),
         "phase2": summarize(phase2_records, "Phase2"),
         "phase3": summarize(phase3_records, "Phase3"),
+        "proposal_stats": {
+            phase_name: {
+                category: dict(bucket)
+                for category, bucket in sorted(phase_buckets.items())
+            }
+            for phase_name, phase_buckets in proposal_stats.items()
+        },
     }
 
     elapsed = time.time() - run_start

@@ -43,9 +43,58 @@ def is_ask_query(row: dict[str, object]) -> bool:
     return "ASK" in query and "SELECT" not in query
 
 
+def ask_answer(row: dict[str, object]) -> bool | None:
+    if not is_ask_query(row):
+        return None
+    answers = row.get("answers") or []
+    if not isinstance(answers, list) or not answers:
+        return None
+    value = str(answers[0]).strip().lower()
+    if value in {"true", "1"}:
+        return True
+    if value in {"false", "0"}:
+        return False
+    return None
+
+
 def has_ordinal_construct(row: dict[str, object]) -> bool:
     query = str(row.get("sparql", "")).upper()
     return "ORDER BY" in query and "OFFSET" in query and "LIMIT 1" in query
+
+
+def same_different_shape_issue(row: dict[str, object]) -> str:
+    """Catch lexical same/different intent mismatches for boolean comparisons.
+
+    This is intentionally conservative.  It does not flag entity-identity
+    filters such as ?company1 != ?company2, which are correct when two distinct
+    entities share the same industry/location/person/year.  It only flags
+    cases where the question asks for sameness but the query compares the
+    compared value variables with inequality, or vice versa.
+    """
+    category = str(row.get("category", "")).lower()
+    if category not in {"comparative", "difference"}:
+        return ""
+    question = str(row.get("question", "")).lower()
+    sparql = re.sub(r"\s+", " ", str(row.get("sparql", "")).lower())
+    value_pairs = {
+        "industry": (("same industry", "different industries", "different industry"), ("industry1", "industry2")),
+        "location": (("same location", "different locations", "different location"), ("loc1", "loc2", "location1", "location2")),
+        "year": (("same year", "same founding year", "different years", "different founding years"), ("year1", "year2")),
+        "employees": (("same employee count", "same number of employees", "different employee count"), ("count1", "count2", "employees1", "employees2")),
+        "person": (("same key person", "share a key person", "different key person"), ("person1", "person2")),
+    }
+    for label, (markers, vars_) in value_pairs.items():
+        same_markers = [m for m in markers if m.startswith("same") or m.startswith("share")]
+        different_markers = [m for m in markers if m.startswith("different")]
+        value_neq = any(f"?{vars_[i]} != ?{vars_[j]}" in sparql for i in range(len(vars_)) for j in range(len(vars_)) if i != j)
+        value_eq = any(f"?{vars_[i]} = ?{vars_[j]}" in sparql for i in range(len(vars_)) for j in range(len(vars_)) if i != j)
+        if any(marker in question for marker in same_markers) and value_neq:
+            return f"same_{label}_question_uses_value_inequality"
+        if any(marker in question for marker in different_markers) and not (value_neq or "not exists" in sparql or "minus" in sparql):
+            return f"different_{label}_question_without_value_difference"
+        if category == "difference" and any(marker in question for marker in same_markers) and not value_eq:
+            return f"difference_category_same_{label}_wording"
+    return ""
 
 
 def predicates_for_query(sparql: str) -> list[str]:
@@ -76,6 +125,15 @@ def summarize(rows: list[dict[str, object]]) -> dict[str, object]:
     predicates = Counter()
     for row in rows:
         predicates.update(predicates_for_query(str(row.get("sparql", ""))))
+    ask_rows = [row for row in rows if is_ask_query(row)]
+    ask_values = Counter()
+    ask_by_category: dict[str, Counter[str]] = {}
+    for row in ask_rows:
+        category = str(row.get("category", "unknown"))
+        value = ask_answer(row)
+        label = "true" if value is True else "false" if value is False else "unknown"
+        ask_values[label] += 1
+        ask_by_category.setdefault(category, Counter())[label] += 1
     total = len(rows)
     summary = {
         "total": total,
@@ -93,9 +151,24 @@ def summarize(rows: list[dict[str, object]]) -> dict[str, object]:
             is_ask_query(row) and str(row.get("category")) not in {"yesno", "comparative", "difference"}
             for row in rows
         ),
+        "ask_answers": {
+            "total": len(ask_rows),
+            "true": ask_values.get("true", 0),
+            "false": ask_values.get("false", 0),
+            "unknown": ask_values.get("unknown", 0),
+            "false_rate": ask_values.get("false", 0) / len(ask_rows) if ask_rows else 0.0,
+            "by_category": {
+                category: dict(sorted(counter.items()))
+                for category, counter in sorted(ask_by_category.items())
+            },
+        },
         "ordinal_without_ranked_offset": sum(
             str(row.get("category")) == "ordinal" and not has_ordinal_construct(row)
             for row in rows
+        ),
+        "same_different_shape_issues": sum(bool(same_different_shape_issue(row)) for row in rows),
+        "same_different_shape_issue_types": dict(
+            sorted(Counter(issue for row in rows if (issue := same_different_shape_issue(row))).items())
         ),
         "predicate_inventory": dict(sorted(predicates.items())),
         "latency_ms": {
