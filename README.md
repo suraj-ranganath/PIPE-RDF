@@ -1,8 +1,12 @@
-# PIPE-RDF
+# PIPE-RDF: Execution-Grounded Generation of Schema-Specific NL-SPARQL Benchmarks
 
 PIPE-RDF builds schema-specific natural-language-to-SPARQL benchmarks for RDF knowledge graphs. It grounds generation in the target graph, balances query categories, validates every SPARQL query by parsing and execution, and writes reproducible run artifacts for benchmark construction and downstream NL-to-SPARQL evaluation.
 
 This branch is the public code branch. Paper drafts, submission packages, and anonymous-review source files are intentionally not kept here.
+
+## Abstract
+
+Natural-language access to RDF knowledge graphs depends on evaluation sets whose queries actually run on the graph being tested. Existing KGQA benchmarks provide useful shared tasks, but their schemas, namespaces, predicates, and query distributions often differ from the graphs used in practice. We introduce PIPE-RDF, an execution-grounded workflow for building schema-specific natural-language/SPARQL benchmarks from a target RDF graph. PIPE-RDF starts with reverse queries that populate deterministic binding banks, uses category-aware retrieval to supply schema-matched examples, and applies controlled LLM generation to produce candidate question-query pairs. Each candidate is accepted only after passing predicate and type checks, deduplication, parsing, execution, answer-shape validation, and non-empty-result checks. Across a compact company-location schema and a 25M-triple LDBC Semantic Publishing Benchmark graph, PIPE-RDF produces 3,600 balanced pairs across nine query categories with no parse, execution, or empty-answer failures in the released artifacts. Cross-model probes, a dual LLM-judge audit, and downstream prompting experiments indicate that the resulting benchmarks are robust, semantically aligned, and useful as schema-matched examples for NL-SPARQL evaluation.
 
 ## Features
 
