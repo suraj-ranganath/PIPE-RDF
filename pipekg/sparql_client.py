@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple, Optional
 import time
 
-from SPARQLWrapper import SPARQLWrapper, JSON
+from SPARQLWrapper import SPARQLWrapper, JSON, POST
 
 
 @dataclass
@@ -23,6 +23,7 @@ class SparqlClient:
     def query(self, sparql: str) -> QueryResult:
         client = SPARQLWrapper(self.endpoint_url)
         client.setReturnFormat(JSON)
+        client.setMethod(POST)
         client.setTimeout(self.timeout)
         for key, value in self.params.items():
             client.addCustomParameter(key, value)

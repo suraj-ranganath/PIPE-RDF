@@ -9,3 +9,4 @@ matplotlib
 requests
 pyparsing
 pyyaml
+sentence-transformers

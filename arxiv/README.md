@@ -2,29 +2,28 @@
 
 This folder contains the arXiv-ready source package for:
 
-**PIPE-RDF: An LLM-Assisted Pipeline for Enterprise RDF Benchmarking**
+**PIPE-RDF: Execution-Grounded Generation of Schema-Specific NL--SPARQL Benchmarks**
 
 ## Metadata in this version
 
 - Author: Suraj Ranganath
-- Affiliation: UC San Deigo
-- Email: suranganath@ucsd
-- Abstract code link: https://github.com/suraj-ranganath/PIPE-RDF
+- Affiliation: UC San Diego
+- Email: suranganath@ucsd.edu
+- Public code link: https://github.com/suraj-ranganath/PIPE-RDF
 
 ## Files included
 
 - `acl_latex.tex`
 - `references.bib`
+- `acl_latex.bbl`
 - `acl.sty`
 - `acl_natbib.bst`
 - `figures/*.png`
+- `PIPE-RDF-arxiv-submission.zip`
 
 ## Build locally
 
 ```bash
 cd arxiv
-pdflatex acl_latex.tex
-bibtex acl_latex
-pdflatex acl_latex.tex
-pdflatex acl_latex.tex
+latexmk -pdf -interaction=nonstopmode -halt-on-error acl_latex.tex
 ```

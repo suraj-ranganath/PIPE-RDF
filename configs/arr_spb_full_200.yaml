@@ -1,0 +1,53 @@
+llm_provider: openai_compatible
+openai_base_url: http://localhost:8002/v1
+
+models:
+  chat: Qwen/Qwen3.5-4B
+  embed_provider: sentence_transformers
+  embed: BAAI/bge-m3
+  local_embed_device: cpu
+
+sparql_endpoint_url: http://localhost:7200/repositories/spb_1m
+schema_summary_path: artifacts/schema_profiles/arr_spb_full_200/schema_summary.txt
+allowed_predicates_path: artifacts/schema_profiles/arr_spb_full_200/predicates.csv
+allowed_types_path: artifacts/schema_profiles/arr_spb_full_200/types.csv
+preferred_types:
+  - foaf:Person
+  - gn:Feature
+  - dbo:Company
+  - dbo:Event
+skip_preferred_types: true
+use_common_allowed: true
+slot_type_hints:
+  person: foaf:Person
+  location: gn:Feature
+  feature: gn:Feature
+  company: dbo:Company
+  event: dbo:Event
+
+sizes:
+  phase1_templates_per_category: 8
+  phase1_seeds_per_template: 10
+  phase2_seeds_per_category: 50
+  target_per_category: 200
+
+template_candidates: 5
+reverse_query_timeout_sec: 60
+max_attempts_factor: 8
+max_row_checks: 100
+predicate_whitelist_topk: 1000
+schema_summary_topk: 120
+schema_timeout_sec: 120
+sparql_infer: false
+sparql_timeout_sec: 180
+generated_query_limit: 5
+binding_bank_target_rows: 1500
+binding_bank_query_limit: 300
+binding_bank_offset_stride: 100000
+binding_bank_max_queries: 5
+binding_bank_extend_queries: 1
+binding_bank_batch_size: 200
+retrieval_top_k: 3
+repair_attempts: 1
+dup_sim_threshold: 0.97
+max_entity_pct: 0.08

@@ -95,7 +95,7 @@ def generate_pipeline_figure(path: Path) -> None:
     ax.text(0.03, 0.29, "Phase 3: Full Dataset Generation", fontsize=13, weight="bold")
 
     # Phase 1.
-    _rounded_box(ax, 0.05, 0.69, 0.19, 0.14, "Enterprise RDF\nGraph +\nSchema Summary", face="#FFFFFF")
+    _rounded_box(ax, 0.05, 0.69, 0.19, 0.14, "Target RDF\nGraph +\nSchema Summary", face="#FFFFFF")
     _rounded_box(ax, 0.28, 0.69, 0.17, 0.14, "Template\nGeneration")
     _rounded_box(ax, 0.49, 0.69, 0.18, 0.14, "Reverse Querying\n+ Validation")
     _rounded_box(ax, 0.71, 0.69, 0.23, 0.14, "Verified Seed Bank\n(NL, SPARQL, answers)")
@@ -245,7 +245,7 @@ def generate_schema_figure(path: Path) -> None:
 
 
 def main() -> None:
-    out_dir = Path("paper_acl2026_industry/figures")
+    out_dir = Path("artifacts/figures/reference_style")
     generate_pipeline_figure(out_dir / "pipeline_architecture.png")
     generate_schema_figure(out_dir / "schema_ontology.png")
     print("Generated reference-style figures in", out_dir)

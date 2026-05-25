@@ -4,6 +4,7 @@ import json
 import time
 from dataclasses import dataclass
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -322,6 +323,30 @@ class OllamaPipeline:
         if "numberofemployees" in schema_lower or "number of employees" in schema_lower:
             literal_slots.update({"number", "numberofemployees", "employees"})
 
+        dynamic_slot_bases = {
+            "agent",
+            "article",
+            "company",
+            "country",
+            "creativework",
+            "document",
+            "event",
+            "feature",
+            "industry",
+            "location",
+            "organization",
+            "organisation",
+            "person",
+            "place",
+            "tag",
+            "topic",
+        }
+        dynamic_slot_bases.update(self.slot_type_hints.keys())
+        dynamic_numbered_slots = {
+            f"{base}{idx}"
+            for base in dynamic_slot_bases
+            for idx in (1, 2)
+        }
         allowed_by_category = {
             "generic": {"company", "location", "industry", "person", "year", "number"},
             "counting": {"company", "location", "industry", "person", "year", "number"},
@@ -340,7 +365,7 @@ class OllamaPipeline:
                 "number2",
             },
             "superlative": {"industry", "location", "company", "person", "year", "number"},
-            "ordinal": {"company", "location", "industry", "person", "year", "number"},
+            "ordinal": {"company", "location", "industry", "person", "year", "number", "rank"},
             "multi-hop": {"company", "location", "industry", "person", "year", "number"},
             "intersection": {"company", "location", "industry", "person", "year", "number"},
             "difference": {
@@ -360,6 +385,9 @@ class OllamaPipeline:
             "yesno": {"company", "location", "industry", "person", "year", "number"},
         }
         allowed_slots = set(allowed_by_category.get(category, {"company", "location", "industry", "person"}))
+        allowed_slots.update(dynamic_slot_bases)
+        if category in {"comparative", "difference"}:
+            allowed_slots.update(dynamic_numbered_slots)
         allowed_slots.update(literal_slots)
         raw_hints = "; ".join(hints_map.get(category, [])) or "None"
         hints_text = raw_hints.replace("{", "{{").replace("}", "}}")
@@ -550,15 +578,7 @@ class OllamaPipeline:
                 if not item["slots"] or all(slot in allowed_slots for slot in item["slots"])
             ]
             if category in {"comparative", "difference"}:
-                allowed_pairs = [
-                    {"company1", "company2"},
-                    {"person1", "person2"},
-                    {"location1", "location2"},
-                    {"industry1", "industry2"},
-                    {"year1", "year2"},
-                    {"number1", "number2"},
-                ]
-                filtered = [item for item in filtered if set(item["slots"]) in allowed_pairs]
+                filtered = [item for item in filtered if set(item["slots"]) == {"company1", "company2"}]
             if category == "ordinal":
                 filtered = [item for item in filtered if set(item["slots"]).issubset(allowed_slots)]
         if not filtered:
@@ -678,6 +698,132 @@ class OllamaPipeline:
         fallback = type_uri.rsplit("/", 1)[-1]
         self._type_label_cache[type_uri] = fallback
         return fallback
+
+    def prime_entity_metadata(self, uris: List[str], batch_size: int = 200) -> None:
+        """Populate type and label caches for a binding bank with batched VALUES queries."""
+        clean_uris = [
+            uri
+            for uri in dict.fromkeys(uris)
+            if isinstance(uri, str) and uri.startswith(("http://", "https://"))
+        ]
+        if not clean_uris:
+            return
+
+        def chunks(items: List[str], size: int):
+            for idx in range(0, len(items), size):
+                yield items[idx : idx + size]
+
+        def values_block(items: List[str]) -> str:
+            return " ".join(f"<{uri}>" for uri in items)
+
+        bad_types = {
+            "http://www.w3.org/2002/07/owl#Class",
+            "http://www.w3.org/2002/07/owl#Thing",
+            "http://www.w3.org/2000/01/rdf-schema#Class",
+        }
+
+        missing_types = [uri for uri in clean_uris if uri not in self._type_cache]
+        for batch in chunks(missing_types, batch_size):
+            q = f"""
+SELECT ?entity ?type
+WHERE {{
+  VALUES ?entity {{ {values_block(batch)} }}
+  ?entity a ?type .
+}}
+"""
+            ok, _, rows, _ = self.execute_rows(q)
+            found = set()
+            if ok:
+                for row in rows:
+                    entity = row.get("entity")
+                    type_uri = row.get("type")
+                    if not entity or not type_uri or type_uri in bad_types:
+                        continue
+                    if entity not in found:
+                        self._type_cache[entity] = type_uri
+                        found.add(entity)
+            for uri in batch:
+                self._type_cache.setdefault(uri, None)
+
+        label_props = [
+            "http://xmlns.com/foaf/0.1/name",
+            "http://www.w3.org/2000/01/rdf-schema#label",
+            "http://www.ldbcouncil.org/spb#prefLabel",
+            "http://purl.org/dc/terms/title",
+        ]
+        for prop in label_props:
+            missing_labels = [uri for uri in clean_uris if uri not in self._label_cache]
+            if not missing_labels:
+                break
+            for batch in chunks(missing_labels, batch_size):
+                q = f"""
+SELECT ?entity (SAMPLE(?rawLabel) AS ?label)
+WHERE {{
+  VALUES ?entity {{ {values_block(batch)} }}
+  ?entity <{prop}> ?rawLabel .
+}}
+GROUP BY ?entity
+"""
+                ok, _, rows, _ = self.execute_rows(q)
+                if not ok:
+                    continue
+                for row in rows:
+                    entity = row.get("entity")
+                    label = row.get("label")
+                    if entity and label and entity not in self._label_cache:
+                        self._label_cache[entity] = label
+
+        for uri in clean_uris:
+            if uri not in self._label_cache:
+                fallback = uri.rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+                try:
+                    from urllib.parse import unquote
+
+                    fallback = unquote(fallback)
+                except Exception:
+                    pass
+                self._label_cache[uri] = fallback.replace("_", " ").strip() or uri
+
+        type_uris = [
+            uri
+            for uri in dict.fromkeys(t for t in self._type_cache.values() if isinstance(t, str) and t)
+            if uri not in self._type_label_cache
+        ]
+        for prop in label_props[1:]:
+            missing_type_labels = [uri for uri in type_uris if uri not in self._type_label_cache]
+            if not missing_type_labels:
+                break
+            for batch in chunks(missing_type_labels, batch_size):
+                q = f"""
+SELECT ?entity (SAMPLE(?rawLabel) AS ?label)
+WHERE {{
+  VALUES ?entity {{ {values_block(batch)} }}
+  ?entity <{prop}> ?rawLabel .
+}}
+GROUP BY ?entity
+"""
+                ok, _, rows, _ = self.execute_rows(q)
+                if not ok:
+                    continue
+                for row in rows:
+                    entity = row.get("entity")
+                    label = row.get("label")
+                    if entity and label and entity not in self._type_label_cache:
+                        self._type_label_cache[entity] = label
+
+        for uri in type_uris:
+            if uri in self._type_label_cache:
+                continue
+            local = uri.rsplit("/", 1)[-1].rsplit("#", 1)[-1]
+            lower = local.lower()
+            if lower == "feature":
+                self._type_label_cache[uri] = "Location"
+            elif lower == "company":
+                self._type_label_cache[uri] = "Company"
+            elif lower == "person":
+                self._type_label_cache[uri] = "Person"
+            else:
+                self._type_label_cache[uri] = local or uri
 
     def extract_sparql(self, text: str) -> str:
         text = text.strip()
@@ -827,12 +973,18 @@ class OllamaPipeline:
         sparql = self.extract_first_query(sparql)
         while "{{" in sparql or "}}" in sparql:
             sparql = sparql.replace("{{", "{").replace("}}", "}")
+        sparql = re.sub(r"(?is)\(\s*SPARQLQuery\s*\)", "", sparql)
         sparql = re.sub(r"(?is)SELECT\s*\(\s*(\?\w+)\s*\)", r"SELECT \1", sparql)
         sparql = re.sub(
             r"(?is)SELECT\s+COUNT\s*\(\s*([^\)]+)\s*\)",
             r"SELECT (COUNT(\1) AS ?count)",
             sparql,
         )
+        count_alias = re.search(r"(?is)AS\s+\?count\s*\)", sparql)
+        if count_alias:
+            where = sparql[count_alias.end():]
+            if re.search(r"(?<!AS\s)\?count\b", where, flags=re.IGNORECASE):
+                sparql = re.sub(r"(?is)AS\s+\?count\s*\)", "AS ?answer_count)", sparql, count=1)
         sparql = self.wrap_bare_iris(sparql)
         sparql = re.sub(r'\"(https?://[^\"\\s]+)\"', r"<\\1>", sparql)
         sparql = self.normalize_generated_select(sparql)
@@ -901,7 +1053,7 @@ class OllamaPipeline:
                 continue
             iri = hint.split("|", 1)[0].strip()
             if iri:
-                iri_map[slot] = iri
+                iri_map[slot] = urllib.parse.unquote(iri)
         if not iri_map:
             return sparql
         lines = []
@@ -909,6 +1061,9 @@ class OllamaPipeline:
             stripped = line.strip().rstrip(".").strip()
             if not stripped:
                 lines.append(line)
+                continue
+            values_match = re.match(r"VALUES\s+\?(\w+)\b", stripped, flags=re.IGNORECASE)
+            if values_match and values_match.group(1) in iri_map:
                 continue
             parts = stripped.split()
             if len(parts) == 2 and parts[0].startswith("?") and parts[1].startswith("<"):

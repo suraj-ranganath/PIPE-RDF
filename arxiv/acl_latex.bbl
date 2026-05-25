@@ -1,16 +1,5 @@
-\begin{thebibliography}{11}
+\begin{thebibliography}{25}
 \providecommand{\natexlab}[1]{#1}
-
-\bibitem[{Agarwal et~al.(2024)Agarwal, Karthik, Li, Chen, Casanas, Karanasos,
-  Kraska, Nori, Rahman, Zhang, Mittal, Basu, and Cai}]{agarwal2024crossmodel}
-Anurag Agarwal, Shiva Karthik, Chang Li, Xin Chen, Roger Casanas, Konstantinos
-  Karanasos, Tim Kraska, Aditya Nori, Jayanta Rahman, Ce~Zhang, Sparsh Mittal,
-  Sumit Basu, and Haoran Cai. 2024.
-\newblock \href {https://doi.org/10.1145/3627673.3679932} {Generating
-  cross-model analytics workloads using llms}.
-\newblock In \emph{Proceedings of the 33rd ACM International Conference on
-  Information and Knowledge Management}, pages 1024--1034. Association for
-  Computing Machinery.
 
 \bibitem[{Brown et~al.(2020)Brown, Mann, Ryder, Subbiah, Kaplan, Dhariwal,
   Neelakantan, Shyam, Sastry, Askell, Agarwal, Herbert-Voss, Krueger, Henighan,
@@ -26,16 +15,60 @@ Tom~B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan,
   few-shot learners}.
 \newblock \emph{Preprint}, arXiv:2005.14165.
 
-\bibitem[{Kiela et~al.(2021)Kiela, Bartolo, Nie, Kaushik, Geiger, Wu, Vidgen,
-  Prasad, Singh, Ringshia, Ma, Thrush, Riedel, Waseem, Stenetorp, Jia, Bansal,
-  Potts, and Williams}]{kiela2021dynabenchrethinkingbenchmarkingnlp}
-Douwe Kiela, Max Bartolo, Yixin Nie, Divyansh Kaushik, Atticus Geiger,
-  Zhengxuan Wu, Bertie Vidgen, Grusha Prasad, Amanpreet Singh, Pratik Ringshia,
-  Zhiyi Ma, Tristan Thrush, Sebastian Riedel, Zeerak Waseem, Pontus Stenetorp,
-  Robin Jia, Mohit Bansal, Christopher Potts, and Adina Williams. 2021.
-\newblock \href {https://arxiv.org/abs/2104.14337} {Dynabench: Rethinking
-  benchmarking in nlp}.
-\newblock \emph{Preprint}, arXiv:2104.14337.
+\bibitem[{Cao et~al.(2022)Cao, Shi, Pan, Nie, Xiang, Hou, Li, He, and
+  Zhang}]{cao-etal-2022-kqa}
+Shulin Cao, Jiaxin Shi, Liangming Pan, Lunyiu Nie, Yutong Xiang, Lei Hou,
+  Juanzi Li, Bin He, and Hanwang Zhang. 2022.
+\newblock \href {https://doi.org/10.18653/v1/2022.acl-long.422} {{KQA} pro: A
+  dataset with explicit compositional programs for complex question answering
+  over knowledge base}.
+\newblock In \emph{Proceedings of the 60th Annual Meeting of the Association
+  for Computational Linguistics (Volume 1: Long Papers)}, pages 6101--6119,
+  Dublin, Ireland. Association for Computational Linguistics.
+
+\bibitem[{Dubey et~al.(2019)Dubey, Banerjee, Abdelkawi, and
+  Lehmann}]{DBLP:conf/semweb/DubeyBA019}
+Mohnish Dubey, Debayan Banerjee, Abdelrahman Abdelkawi, and Jens Lehmann. 2019.
+\newblock \href {https://doi.org/10.1007/978-3-030-30796-7_5} {{LC-QuAD} 2.0:
+  {A} large dataset for complex question answering over wikidata and dbpedia}.
+\newblock In \emph{The Semantic Web - ISWC 2019}, Lecture Notes in Computer
+  Science, pages 69--78. Springer.
+
+\bibitem[{F{\"u}rst et~al.(2024)F{\"u}rst, Osei-Akoto, Sivasubramaniam,
+  Stockinger, and Zhang}]{furst2024sm3}
+Jonathan F{\"u}rst, Cedric Osei-Akoto, Sithursan Sivasubramaniam, Kurt
+  Stockinger, and Yi~Zhang. 2024.
+\newblock \href {https://doi.org/10.52202/079017-2812} {{SM3}-text-to-query:
+  Synthetic multi-model medical text-to-query benchmark}.
+\newblock In \emph{Advances in Neural Information Processing Systems 37}, pages
+  88627--88663. Neural Information Processing Systems Foundation, Inc.
+  (NeurIPS).
+
+\bibitem[{Keysers et~al.(2020)Keysers, Sch{\"a}rli, Scales, Buisman, Furrer,
+  Kashubin, Momchev, Sinopalnikov, Stafiniak, Tihon, Tsarkov, Wang, van Zee,
+  and Bousquet}]{keysers2020cfq}
+Daniel Keysers, Nathanael Sch{\"a}rli, Nathan Scales, Hylke Buisman, Daniel
+  Furrer, Sergii Kashubin, Nikola Momchev, Danila Sinopalnikov, Lukasz
+  Stafiniak, Tibor Tihon, Dmitry Tsarkov, Xiao Wang, Marc van Zee, and Olivier
+  Bousquet. 2020.
+\newblock \href {https://arxiv.org/abs/1912.09713} {Measuring compositional
+  generalization: A comprehensive method on realistic data}.
+\newblock \emph{Preprint}, arXiv:1912.09713.
+
+\bibitem[{Kosten et~al.(2023)Kosten, Cudr{\'{e}}{-}Mauroux, and
+  Stockinger}]{DBLP:conf/bigdataconf/KostenCS23}
+Catherine Kosten, Philippe Cudr{\'{e}}{-}Mauroux, and Kurt Stockinger. 2023.
+\newblock \href {https://doi.org/10.1109/BIGDATA59044.2023.10386182}
+  {Spider4sparql: {A} complex benchmark for evaluating knowledge graph question
+  answering systems}.
+\newblock In \emph{{IEEE} International Conference on Big Data, BigData 2023},
+  pages 5272--5281. {IEEE}.
+
+\bibitem[{Lee and Shin(2025)}]{lee2025sparkle}
+Jaebok Lee and Hyeonjeong Shin. 2025.
+\newblock \href {https://doi.org/10.1016/j.eswa.2025.128263} {{SPARKLE}:
+  Enhancing {SPARQL} generation with direct {KG} integration in decoding}.
+\newblock \emph{Expert Systems with Applications}, 289:128263.
 
 \bibitem[{Lewis et~al.(2021)Lewis, Perez, Piktus, Petroni, Karpukhin, Goyal,
   K{"u}ttler, Lewis, tau Yih, Rockt{"a}schel, Riedel, and
@@ -46,6 +79,37 @@ Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir
 \newblock \href {https://arxiv.org/abs/2005.11401} {Retrieval-augmented
   generation for knowledge-intensive nlp tasks}.
 \newblock \emph{Preprint}, arXiv:2005.11401.
+
+\bibitem[{{Linked Data Benchmark Council}(2026)}]{ldbcspb}
+{Linked Data Benchmark Council}. 2026.
+\newblock {LDBC} semantic publishing benchmark ({SPB}).
+\newblock \url{https://ldbcouncil.org/benchmarks/spb}.
+\newblock Accessed 2026-05-20.
+
+\bibitem[{Liu et~al.(2023)Liu, Iter, Xu, Wang, Xu, and Zhu}]{liu-etal-2023-g}
+Yang Liu, Dan Iter, Yichong Xu, Shuohang Wang, Ruochen Xu, and Chenguang Zhu.
+  2023.
+\newblock \href {https://doi.org/10.18653/v1/2023.emnlp-main.153} {{G}-eval:
+  {NLG} evaluation using gpt-4 with better human alignment}.
+\newblock In \emph{Proceedings of the 2023 Conference on Empirical Methods in
+  Natural Language Processing}, pages 2511--2522, Singapore. Association for
+  Computational Linguistics.
+
+\bibitem[{Omar et~al.(2025)Omar, Orogat, Abdelaziz, Mangukiya, Kalnis, and
+  Mansour}]{omar2025chattykg}
+Reham Omar, Abdelghny Orogat, Ibrahim Abdelaziz, Omij Mangukiya, Panos Kalnis,
+  and Essam Mansour. 2025.
+\newblock \href {https://arxiv.org/abs/2511.20940} {{Chatty-KG}: A multi-agent
+  {AI} system for on-demand conversational question answering over knowledge
+  graphs}.
+\newblock \emph{Preprint}, arXiv:2511.20940.
+
+\bibitem[{Pan et~al.(2025)Pan, de~Boer, and van
+  Ossenbruggen}]{pan2025firesparql}
+Xueli Pan, Victor de~Boer, and Jacco van Ossenbruggen. 2025.
+\newblock \href {https://arxiv.org/abs/2508.10467} {{FIRESPARQL}: A {LLM}-based
+  framework for {SPARQL} query generation over scholarly knowledge graphs}.
+\newblock \emph{Preprint}, arXiv:2508.10467.
 
 \bibitem[{Perevalov et~al.(2022)Perevalov, Diefenbach, Usbeck, and
   Both}]{perevalov2022qald9plusmultilingualdatasetquestion}
@@ -72,6 +136,21 @@ Md~Rashad Al~Hasan Rony, Uttam Kumar, Roman Teucher, Liubov Kovriguina, and
   questions}.
 \newblock \emph{IEEE Access}, 10:70712--70723.
 
+\bibitem[{Saleem et~al.(2015)Saleem, Mehmood, and
+  Ngomo}]{DBLP:conf/semweb/SaleemMN15}
+Muhammad Saleem, Qaiser Mehmood, and Axel{-}Cyrille~Ngonga Ngomo. 2015.
+\newblock \href {https://doi.org/10.1007/978-3-319-25007-6_4} {{FEASIBLE:} {A}
+  feature-based {SPARQL} benchmark generation framework}.
+\newblock In \emph{The Semantic Web - ISWC 2015}, Lecture Notes in Computer
+  Science, pages 52--69. Springer.
+
+\bibitem[{Schmidt et~al.(2008)Schmidt, Hornung, Lausen, and
+  Pinkel}]{schmidt2009sp2bench}
+Michael Schmidt, Thomas Hornung, Georg Lausen, and Christoph Pinkel. 2008.
+\newblock \href {https://arxiv.org/abs/0806.4627} {{SP2Bench}: A {SPARQL}
+  performance benchmark}.
+\newblock \emph{Preprint}, arXiv:0806.4627.
+
 \bibitem[{Scholak et~al.(2021)Scholak, Schucher, and Bahdanau}]{Scholak_2021}
 Torsten Scholak, Nathan Schucher, and Dzmitry Bahdanau. 2021.
 \newblock \href {https://doi.org/10.18653/v1/2021.emnlp-main.779} {Picard:
@@ -87,6 +166,14 @@ Priyanka Sen, Alham~Fikri Aji, and Amir Saffari. 2022.
 \newblock \href {https://arxiv.org/abs/2210.01613} {Mintaka: A complex,
   natural, and multilingual dataset for end-to-end question answering}.
 \newblock \emph{Preprint}, arXiv:2210.01613.
+
+\bibitem[{Soru et~al.(2017)Soru, Marx, Moussallem, Publio, Valdestilhas,
+  Esteves, and Neto}]{soru2017sparqlforeignlanguage}
+Tommaso Soru, Edgard Marx, Diego Moussallem, Gustavo Publio, Andr{\'e}
+  Valdestilhas, Diego Esteves, and Ciro~Baron Neto. 2017.
+\newblock \href {https://arxiv.org/abs/1708.07624} {{SPARQL} as a foreign
+  language}.
+\newblock \emph{Preprint}, arXiv:1708.07624.
 
 \bibitem[{Touvron et~al.(2023)Touvron, Lavril, Izacard, Martinet, Lachaux,
   Lacroix, Rozi{\`e}re, Goyal, Hambro, Azhar, Rodriguez, Joulin, Grave, and
@@ -106,5 +193,28 @@ Priyansh Trivedi, Gaurav Maheshwari, Mohnish Dubey, and Jens Lehmann. 2017.
   A Corpus for Complex Question Answering over Knowledge Graphs}}, pages
   210--218.
 \newblock Springer International Publishing.
+
+\bibitem[{Walter and Bast(2025)}]{walter2025grasp}
+Sebastian Walter and Hannah Bast. 2025.
+\newblock \href {https://arxiv.org/abs/2507.08107} {{GRASP}: Generic reasoning
+  and {SPARQL} generation across knowledge graphs}.
+\newblock \emph{Preprint}, arXiv:2507.08107.
+
+\bibitem[{Zheng et~al.(2023)Zheng, Chiang, Sheng, Zhuang, Wu, Zhuang, Lin, Li,
+  Li, Xing, Zhang, Gonzalez, and Stoica}]{zheng2023mtbench}
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao
+  Zhuang, Zi~Lin, Zhuohan Li, Dacheng Li, Eric~P. Xing, Hao Zhang, Joseph~E.
+  Gonzalez, and Ion Stoica. 2023.
+\newblock \href {https://arxiv.org/abs/2306.05685} {Judging {LLM}-as-a-judge
+  with {MT}-bench and chatbot arena}.
+\newblock \emph{Preprint}, arXiv:2306.05685.
+
+\bibitem[{Zheng et~al.(2024)Zheng, Kumar, and Gupta}]{zheng2024crossmodel}
+Xiuwen Zheng, Arun Kumar, and Amarnath Gupta. 2024.
+\newblock \href {https://doi.org/10.1145/3627673.3679932} {Generating
+  cross-model analytics workloads using llms}.
+\newblock In \emph{Proceedings of the 33rd ACM International Conference on
+  Information and Knowledge Management}, pages 4303--4307. Association for
+  Computing Machinery.
 
 \end{thebibliography}
