@@ -107,12 +107,57 @@ def build_store(llm, records: list[dict[str, object]]) -> FaissStore | None:
     return FaissStore.build(embeddings, metadata)
 
 
+def embed_record_questions(llm, records: list[dict[str, object]]) -> dict[int, list[float]]:
+    if not records:
+        return {}
+    texts = [str(r.get("question", "")) for r in records]
+    embeddings = llm.embed_texts(texts)
+    return {id(record): embedding for record, embedding in zip(records, embeddings)}
+
+
+def build_store_from_embeddings(
+    records: list[dict[str, object]],
+    record_embeddings: dict[int, list[float]],
+) -> FaissStore | None:
+    if not records:
+        return None
+    embeddings = np.array([record_embeddings[id(r)] for r in records], dtype="float32")
+    metadata = [
+        {
+            "question": str(r.get("question", "")),
+            "sparql": str(r.get("sparql", "")),
+            "category": str(r.get("category", "")),
+        }
+        for r in records
+    ]
+    return FaissStore.build(embeddings, metadata)
+
+
 def retrieve(llm, stores: dict[str, FaissStore | None], question: str, category: str, k: int) -> list[dict[str, str]]:
     store = stores.get(category)
     if store is None:
         return []
     emb = np.array(llm.embed_texts([question]), dtype="float32")
     return store.search_with_scores(emb, k=k)[0]
+
+
+def random_examples(
+    rng: random.Random,
+    records: list[dict[str, object]],
+    k: int,
+) -> list[dict[str, str]]:
+    if not records or k <= 0:
+        return []
+    sample = rng.sample(records, k=min(k, len(records)))
+    return [
+        {
+            "question": str(row.get("question", "")),
+            "sparql": str(row.get("sparql", "")),
+            "category": str(row.get("category", "")),
+            "score": 0.0,
+        }
+        for row in sample
+    ]
 
 
 def prompt_for_question(prefixes: str, schema: str, question: str, examples: list[dict[str, str]]) -> tuple[str, str]:
@@ -188,6 +233,17 @@ def main() -> None:
     parser.add_argument("--test-per-category", type=int, default=20)
     parser.add_argument("--retrieval-k", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        default=["zero_shot", "category_rag"],
+        choices=["zero_shot", "category_rag", "cross_category_rag", "random_same_schema"],
+        help=(
+            "Prompt settings to evaluate. cross_category_rag retrieves from the same schema "
+            "but excludes the target category; random_same_schema samples same-schema examples "
+            "without retrieval."
+        ),
+    )
     parser.add_argument("--output-dir", default="")
     args = parser.parse_args()
 
@@ -216,15 +272,31 @@ def main() -> None:
         test_records.extend(shuffled[: args.test_per_category])
         train_records.extend(shuffled[args.test_per_category :])
 
-    stores = {
-        category: build_store(llm, [r for r in train_records if str(r.get("category")) == category])
-        for category in by_category
-    }
+    needs_retrieval = any(c in args.conditions for c in ("category_rag", "cross_category_rag"))
+    train_embeddings = embed_record_questions(llm, train_records) if needs_retrieval else {}
+    stores: dict[str, FaissStore | None] = {}
+    cross_category_stores: dict[str, FaissStore | None] = {}
+    if "category_rag" in args.conditions:
+        stores = {
+            category: build_store_from_embeddings(
+                [r for r in train_records if str(r.get("category")) == category],
+                train_embeddings,
+            )
+            for category in by_category
+        }
+    if "cross_category_rag" in args.conditions:
+        cross_category_stores = {
+            category: build_store_from_embeddings(
+                [r for r in train_records if str(r.get("category")) != category],
+                train_embeddings,
+            )
+            for category in by_category
+        }
 
     out_dir = Path(args.output_dir) if args.output_dir else Path("artifacts/downstream_utility") / args.schema_name
     out_dir.mkdir(parents=True, exist_ok=True)
     result_rows: list[dict[str, object]] = []
-    total_prompts = len(test_records) * 2
+    total_prompts = len(test_records) * len(args.conditions)
     completed_prompts = 0
 
     for record in test_records:
@@ -232,10 +304,14 @@ def main() -> None:
         category = str(record.get("category", "unknown"))
         gold_sparql = str(record.get("sparql", ""))
         gold_answers = [str(a) for a in (record.get("answers") or [])]
-        for condition in ("zero_shot", "category_rag"):
+        for condition in args.conditions:
             examples = []
             if condition == "category_rag":
                 examples = retrieve(llm, stores, question, category, args.retrieval_k)
+            elif condition == "cross_category_rag":
+                examples = retrieve(llm, cross_category_stores, question, category, args.retrieval_k)
+            elif condition == "random_same_schema":
+                examples = random_examples(rng, train_records, args.retrieval_k)
             system, user = prompt_for_question(prefixes, schema_summary, question, examples)
             completed_prompts += 1
             print(
