@@ -4,9 +4,23 @@ PIPE-RDF builds schema-specific natural-language-to-SPARQL benchmarks for RDF kn
 
 This branch is the public code branch. Paper drafts, submission packages, and anonymous-review source files are intentionally not kept here.
 
+- Paper: *PIPE-RDF: Execution-Grounded Generation of Schema-Specific NL-SPARQL Benchmarks*, Findings of EACL 2027.
+- Dataset: [suraj-ranganath/PIPE-RDF-benchmarks](https://huggingface.co/datasets/suraj-ranganath/PIPE-RDF-benchmarks) on Hugging Face.
+
 ## Abstract
 
 Natural-language access to RDF knowledge graphs depends on evaluation sets whose queries actually run on the graph being tested. Existing KGQA benchmarks provide useful shared tasks, but their schemas, namespaces, predicates, and query distributions often differ from the graphs used in practice. We introduce PIPE-RDF, an execution-grounded workflow for building schema-specific natural-language/SPARQL benchmarks from a target RDF graph. PIPE-RDF starts with reverse queries that populate deterministic binding banks, uses category-aware retrieval to supply schema-matched examples, and applies controlled LLM generation to produce candidate question-query pairs. Each candidate is accepted only after passing predicate and type checks, deduplication, parsing, execution, answer-shape validation, and non-empty-result checks. Across a compact company-location schema and a 25M-triple LDBC Semantic Publishing Benchmark graph, PIPE-RDF produces 3,600 balanced pairs across nine query categories with no parse, execution, or empty-answer failures in the released artifacts. Cross-model probes, a dual LLM-judge audit, and downstream prompting experiments indicate that the resulting benchmarks are robust, semantically aligned, and useful as schema-matched examples for NL-SPARQL evaluation.
+
+## Released Dataset
+
+The benchmarks and evaluation artifacts from the paper are on Hugging Face at [suraj-ranganath/PIPE-RDF-benchmarks](https://huggingface.co/datasets/suraj-ranganath/PIPE-RDF-benchmarks). The release has 3,600 NL-SPARQL pairs (1,800 for Schema C and 1,800 for SPB-full, with 200 per category). It also includes the schema profiles, the semantic-audit packet and judge outputs, the cross-model probes, the downstream-utility results, and the diagnostics.
+
+```python
+from datasets import load_dataset
+
+schema_c = load_dataset("suraj-ranganath/PIPE-RDF-benchmarks", "schema_c", split="test")
+spb_full = load_dataset("suraj-ranganath/PIPE-RDF-benchmarks", "spb_full", split="test")
+```
 
 ## Features
 
@@ -179,3 +193,7 @@ python scripts/evaluate_downstream_utility.py --help
 - Keep generated artifacts under ignored directories such as `artifacts/`, `experiments/`, or `results/`.
 - Record the exact config, model, endpoint, GraphDB repository, and run manifest for each reported experiment.
 - Keep paper drafts and submission packages outside `main`; use dedicated paper/review branches for those.
+
+## License
+
+The code in this repository is released under the [MIT License](LICENSE). The benchmark data on Hugging Face has its own license, stated on the dataset card.
